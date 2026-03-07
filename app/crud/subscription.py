@@ -26,8 +26,9 @@ def parse_datetime(sub_dict: dict):
 
     return sub_dict
 
-async def fetch_subscriptions():
-    subs = await db.subscriptions.find().to_list(100)
+async def fetch_subscriptions(tenant_id: str | None = None):
+    query = {"tenantId": tenant_id} if tenant_id else {}
+    subs = await db.subscriptions.find(query).to_list(100)
     return [convert_id(sub) for sub in subs]
 
 async def fetch_subscription_by_tenant(tenant_id: str):
@@ -65,4 +66,3 @@ async def update_subscription(tenant_id: str, sub: Subscription):
 async def delete_subscription(tenant_id: str):
     result = await db.subscriptions.delete_one({"tenantId": tenant_id})
     return result.deleted_count > 0
-

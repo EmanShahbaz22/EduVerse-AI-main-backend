@@ -1,7 +1,9 @@
 from fastapi import HTTPException
-from app.crud.users import create_user, verify_user
+from app.crud.users import create_user, verify_user, get_user_by_email
 from app.crud.users import update_last_login
 from app.utils.security import create_access_token
+from app.utils.security import verify_password
+from app.utils.user_status import is_auth_status_allowed
 
 
 async def register_user(data):
@@ -12,7 +14,23 @@ async def register_user(data):
 async def login_user(email: str, password: str):
     user = await verify_user(email, password)
     if not user:
-        raise HTTPException(status_code=400, detail="Invalid email or password")
+        existing = await get_user_by_email(email)
+        password_matches = False
+        if existing and existing.get("password"):
+            try:
+                password_matches = verify_password(password, existing["password"])
+            except Exception:
+                password_matches = False
+        if (
+            existing
+            and password_matches
+            and not is_auth_status_allowed(existing.get("status"))
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Your account is inactive. Please contact support.",
+            )
+        raise HTTPException(status_code=401, detail="Invalid email or password")
 
     await update_last_login(user["id"])
 

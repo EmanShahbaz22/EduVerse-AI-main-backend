@@ -6,7 +6,7 @@ from app.crud.super_admin import get_superadmin_by_user, update_superadmin
 router = APIRouter(
     prefix="/super-admin",
     tags=["Super Admin"],
-    dependencies=[Depends(require_role("super-admin"))],
+    dependencies=[Depends(require_role("super_admin"))],
 )
 
 

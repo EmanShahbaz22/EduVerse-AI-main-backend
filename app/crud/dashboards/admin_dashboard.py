@@ -1,6 +1,6 @@
 from bson import ObjectId
+
 from app.db.database import db
-from bson import ObjectId
 
 
 def convert_objectids(doc):
@@ -16,6 +16,14 @@ def convert_objectids(doc):
     return doc
 
 
+def _to_objectid(value):
+    if isinstance(value, ObjectId):
+        return value
+    if isinstance(value, str) and ObjectId.is_valid(value):
+        return ObjectId(value)
+    return None
+
+
 async def get_all_students(tenant_id: str):
     students = []
 
@@ -24,7 +32,10 @@ async def get_all_students(tenant_id: str):
 
     tenant_oid = ObjectId(tenant_id)
     async for s in db.students.find({"tenantId": tenant_oid}):
-        user = await db.users.find_one({"_id": ObjectId(s["userId"])})
+        user_oid = _to_objectid(s.get("userId"))
+        if not user_oid:
+            continue
+        user = await db.users.find_one({"_id": user_oid})
 
         if not user:
             continue
@@ -55,7 +66,10 @@ async def get_all_teachers(tenant_id: str):
 
     tenant_oid = ObjectId(tenant_id)
     async for t in db.teachers.find({"tenantId": tenant_oid}):
-        user = await db.users.find_one({"_id": t["userId"]})
+        user_oid = _to_objectid(t.get("userId"))
+        if not user_oid:
+            continue
+        user = await db.users.find_one({"_id": user_oid})
 
         if not user:
             continue
@@ -85,6 +99,9 @@ async def get_all_courses(tenant_id: str):
 
     tenant_oid = ObjectId(tenant_id)
     async for c in db.courses.find({"tenantId": tenant_oid}):
+        teacher_id = c.get("teacherId")
+        teacher_str = str(teacher_id) if teacher_id else ""
+        tenant_str = str(c.get("tenantId", ""))
         courses.append(
             {
                 "id": str(c["_id"]),
@@ -95,8 +112,8 @@ async def get_all_courses(tenant_id: str):
                 "status": c.get("status", ""),
                 "duration": c.get("duration", ""),
                 "enrolledStudents": c.get("enrolledStudents", 0),
-                "teacherId": str(c.get("teacherId", "")),
-                "tenantId": str(c.get("tenantId", "")),
+                "teacherId": teacher_str,
+                "tenantId": tenant_str,
             }
         )
 

@@ -5,7 +5,7 @@ from app.auth.dependencies import get_current_user, require_role
 router = APIRouter(prefix="/admin/dashboard", tags=["Admin Dashboard"])
 
 # Only admin and super-admin can access these endpoints
-admin_roles = ["admin", "super-admin"]
+admin_roles = ["admin", "super_admin"]
 
 
 @router.get("/teachers")

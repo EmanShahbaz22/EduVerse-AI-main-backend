@@ -1,49 +1,76 @@
 # EduVerse AI Backend
 
 ## Setup
+1. Install `uv`:
 
-1. **Install `uv`** (if not installed):
-
-```powershell
+```bash
 pip install uv
 ```
 
-2. **Create a virtual environment**:
+2. Create and activate a virtual environment:
 
-```powershell
+```bash
 uv venv .venv
+source .venv/bin/activate
 ```
 
-3. **Activate the virtual environment**:
+On Windows PowerShell use:
 
 ```powershell
 .venv\Scripts\activate
 ```
 
-> On Linux/macOS, use: `source .venv/bin/activate`
+3. Install dependencies:
 
-4. **Install project dependencies**:
-
-```powershell
+```bash
 uv sync
 ```
 
----
+## Run
+Start FastAPI:
 
-## Run the App
-
-Start the FastAPI server:
-
-```powershell
+```bash
 uvicorn app.main:app --reload
 ```
 
-Open your browser at [http://127.0.0.1:8000](http://127.0.0.1:8000) to see the app running.
+## Security/RBAC Model
+1. Tenant data isolation remains strict for account/profile/admin management.
+2. Shared marketplace behavior is enabled for students: they may enroll into courses across tenants.
+3. Student identity for enrollment and quiz submission is always derived server-side from the auth session.
 
----
+## Tests (Phase 6)
+RBAC/ownership tests are in `tests/` and cover:
+1. Quiz submission ownership and IDOR protections.
+2. Enrollment ownership + tenant enforcement rules.
+3. Admin tenant-bound mutation protections.
+
+Run:
+
+```bash
+pytest -q
+```
+
+If you install dev dependencies explicitly:
+
+```bash
+uv sync --extra dev
+```
+
+## API Migration Notes (Phase 7)
+See full details in [docs/API_MIGRATION.md](docs/API_MIGRATION.md).
+
+Key contract changes:
+1. `POST /quiz-submissions` no longer accepts `studentId` or `tenantId` from client.
+2. `GET/DELETE /quiz-submissions/*` now enforce role + ownership rules.
+3. `POST /courses/enroll` and `/courses/unenroll` derive student identity for student role; admin/teacher remain tenant-bound.
+
+## Database Consistency Audit
+Use the integrity checker to validate document references and tenant consistency:
+
+```bash
+python -m scripts.check_db_consistency
+```
 
 ## Notes
-
-* Make sure you are in the project root (`EduVerse-AI-Backend-main`) when running Uvicorn.
-* Keep `main.py` inside the `app/` folder for proper imports.
----
+1. Run from repository root (`backend/`) so imports resolve correctly.
+2. `app/main.py` registers startup index creation via `ensure_indexes()`.

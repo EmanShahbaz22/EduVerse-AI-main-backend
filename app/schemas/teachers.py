@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr
-from typing import List, Optional
+from pydantic import BaseModel, EmailStr, Field
+from typing import Dict, List, Optional
 from datetime import datetime
 
 
@@ -53,3 +53,18 @@ class TeacherResponse(BaseModel):
 class ChangePassword(BaseModel):
     oldPassword: str
     newPassword: str
+
+
+class TeacherBulkInviteRequest(BaseModel):
+    emails: List[EmailStr]
+    defaultPassword: Optional[str] = None
+    status: str = "active"
+    tenantId: Optional[str] = None
+
+
+class TeacherBulkInviteResponse(BaseModel):
+    created: int
+    linkedExisting: int
+    skipped: int
+    errors: List[str]
+    generatedPasswords: Dict[str, str] = Field(default_factory=dict)

@@ -21,7 +21,7 @@ class Subscription(BaseModel):
     billing_cycle: str
     status: str
     expiry_date: datetime
-    payment_history: Optional[List[PaymentHistory]] = []
+    payment_history: Optional[List[PaymentHistory]] = Field(default_factory=list)
     userId: Optional[str] = None
     tenantId: str
 

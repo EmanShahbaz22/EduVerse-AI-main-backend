@@ -102,9 +102,9 @@ class CourseResponse(CourseBase):
 
 # Schema for enrolling a student into a specific course
 class CourseEnrollment(BaseModel):
-    studentId: str
     courseId: str
-    tenantId: str  
+    studentId: Optional[str] = None
+    tenantId: Optional[str] = None
 
 # Schema for course data including student progress tracking
 class CourseWithProgress(CourseResponse):

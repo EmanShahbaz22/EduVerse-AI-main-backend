@@ -1,17 +1,25 @@
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.routers.roles import admins, students, super_admin, teachers
+from app.core.settings import get_cors_origins
 
 from app.routers import (
     assignment_submissions,
     assignments,
     courses,
+    payments,
     quiz_submissions,
     quizzes,
     student_performance,
     student_progress,
     subscription,
+    subscription_plans,
     tenants,
+    uploads,
 )
 from app.routers.auth import admin_auth, student_auth, teacher_auth, login
 from app.routers.dashboards import admin_dashboard
@@ -21,25 +29,51 @@ app = FastAPI(
     description="Multi-Tenant E-Learning Platform API",
     version="1.0.0",
 )
+logger = logging.getLogger(__name__)
 
 
-origins = [
-    "http://localhost:4200",
-    "http://localhost:8000",
-    "http://localhost:8000/assignments/",
-    "http://127.0.0.1:4200",
-    "http://127.0.0.1:8000",
-]
+def _format_validation_error(exc: RequestValidationError) -> tuple[str, list[str]]:
+    items: list[str] = []
+    for err in exc.errors():
+        raw_loc = err.get("loc", [])
+        loc = ".".join(str(x) for x in raw_loc if str(x) not in {"body", "query", "path"})
+        msg = err.get("msg", "Invalid value")
+        items.append(f"{loc}: {msg}" if loc else msg)
+    if not items:
+        return "Invalid request payload.", []
+    return "Please fix the highlighted fields and try again.", items
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=get_cors_origins(),
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    message, errors = _format_validation_error(exc)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": message,
+            "errors": errors,
+        },
+    )
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled server error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Something went wrong on our side. Please try again.",
+        },
+    )
 @app.get("/")
 def root():
     return {
@@ -66,54 +100,10 @@ app.include_router(teachers.router)
 # Student Performance
 app.include_router(student_performance.router)
 
+# Student Progress
+app.include_router(student_progress.router)
+
 # Course Management
-# Student Progress Management (Directly on app to avoid router conflicts)
-from app.schemas.student_progress import MarkLessonCompleteRequest, CourseProgressResponse
-from app.crud.student_progress import progress_crud
-from app.auth.dependencies import require_role
-from typing import List
-from fastapi import Query, Depends, HTTPException
-
-@app.get("/courses/progress/{courseId}", response_model=CourseProgressResponse, tags=["Student Progress"])
-async def get_course_progress_top(
-    courseId: str,
-    tenantId: str = Query(..., alias="tenantId"),
-    current_user=Depends(require_role("student"))
-):
-    try:
-        student_id = current_user.get("user_id")
-        progress = await progress_crud.get_or_create_progress(student_id, courseId, tenantId)
-        return progress
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.post("/courses/progress/mark-complete", response_model=CourseProgressResponse, tags=["Student Progress"])
-async def mark_lesson_complete_top(
-    data: MarkLessonCompleteRequest,
-    current_user=Depends(require_role("student"))
-):
-    try:
-        student_id = current_user.get("user_id")
-        tenant_id = current_user.get("tenant_id")
-        result = await progress_crud.mark_lesson_complete(
-            student_id, data.courseId, tenant_id, data.lessonId
-        )
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.get("/courses/progress/summary/all", response_model=List[CourseProgressResponse], tags=["Student Progress"])
-async def get_all_progress_top(
-    tenantId: str = Query(..., alias="tenantId"),
-    current_user=Depends(require_role("student"))
-):
-    student_id = current_user.get("user_id")
-    results = await progress_crud.get_student_course_progress(student_id, tenantId)
-    return results
-
-# Include other routers
 app.include_router(courses.router)
 app.include_router(assignments.router)
 app.include_router(assignment_submissions.router)
@@ -126,3 +116,10 @@ app.include_router(quiz_submissions.router)
 
 # Subscription
 app.include_router(subscription.router)
+app.include_router(subscription_plans.router)
+
+# Payments (Stripe)
+app.include_router(payments.router)
+
+# File uploads
+app.include_router(uploads.router)

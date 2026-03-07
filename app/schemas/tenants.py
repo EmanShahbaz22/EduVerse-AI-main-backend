@@ -18,7 +18,33 @@ class TenantCreate(BaseModel):
     adminEmail: EmailStr = Field(
         ..., json_schema_extra={"example": "admin@example.com"}
     )
+    contactNumber: Optional[str] = None
+    address: Optional[str] = None
     subscriptionId: Optional[str] = None
+    subscriptionCategory: Optional[str] = "free"
+    subscriptionPlan: Optional[str] = None
+    subscriptionBillingCycle: Optional[str] = None
+    subscriptionPriceMonthly: Optional[float] = None
+    subscriptionStartDate: Optional[datetime] = None
+    subscriptionExpiryDate: Optional[datetime] = None
+    subscriptionNotes: Optional[str] = None
+
+    @model_validator(mode="before")
+    def normalize_optional_strings(cls, data):
+        if isinstance(data, dict):
+            for key in (
+                "tenantLogoUrl",
+                "subscriptionId",
+                "subscriptionCategory",
+                "subscriptionPlan",
+                "subscriptionBillingCycle",
+                "subscriptionNotes",
+                "contactNumber",
+                "address",
+            ):
+                if data.get(key) == "":
+                    data[key] = None
+        return data
 
 
 # -------------------------
@@ -28,7 +54,16 @@ class TenantUpdate(BaseModel):
     tenantName: Optional[str] = Field(None, min_length=2, max_length=100)
     tenantLogoUrl: Optional[HttpUrl] = None
     status: Optional[str] = None
+    contactNumber: Optional[str] = None
+    address: Optional[str] = None
     subscriptionId: Optional[str] = None
+    subscriptionCategory: Optional[str] = None
+    subscriptionPlan: Optional[str] = None
+    subscriptionBillingCycle: Optional[str] = None
+    subscriptionPriceMonthly: Optional[float] = None
+    subscriptionStartDate: Optional[datetime] = None
+    subscriptionExpiryDate: Optional[datetime] = None
+    subscriptionNotes: Optional[str] = None
 
     # It is completely optional as the validation is being handled in crud file, but it is a good practice to write validator, so I am keeping this.
     # It runs BEFORE Pydantic validates the body
@@ -49,9 +84,21 @@ class TenantUpdate(BaseModel):
 class TenantResponse(BaseModel):
     id: str
     tenantName: str
-    tenantLogoUrl: Optional[HttpUrl] = None
+    tenantLogoUrl: Optional[str] = None
     adminEmail: EmailStr
     status: str
+    contactNumber: Optional[str] = None
+    address: Optional[str] = None
     subscriptionId: Optional[str]
+    subscriptionCategory: Optional[str] = None
+    subscriptionPlan: Optional[str] = None
+    subscriptionBillingCycle: Optional[str] = None
+    subscriptionPriceMonthly: Optional[float] = None
+    subscriptionStartDate: Optional[datetime] = None
+    subscriptionExpiryDate: Optional[datetime] = None
+    subscriptionNotes: Optional[str] = None
+    courses: int = 0
+    teachers: int = 0
+    students: int = 0
     createdAt: datetime
     updatedAt: Optional[datetime] = None

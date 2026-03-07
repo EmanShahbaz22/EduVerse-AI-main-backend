@@ -17,14 +17,9 @@ class QuizSubmissionCreate(BaseModel):
     - answers: list of AnswerItem (for auto marking)
     - percentage and obtainedMarks are optional and will be set by grading process
     """
-    studentId: str             # student submitting the quiz
     quizId: str                # quiz being submitted
     courseId: str              # course to which the quiz belongs
-    tenantId: str              # tenant of the LMS
     answers: list[AnswerItem]
-    percentage: Optional[float] = None   # optional calculated percentage
-    obtainedMarks: Optional[float] = None # optional obtained marks
-    status: Optional[str] = "pending"      # 'pending' -> before grading, 'graded' -> after auto grade
 
 class QuizSubmissionResponse(BaseModel):
     """
