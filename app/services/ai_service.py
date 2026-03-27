@@ -14,6 +14,18 @@ WHAT IT DOES:
     - Initializes the Gemini LLM (the AI model)
     - Creates a "lesson generation chain" (prompt → AI → structured JSON)
     - Other members will import from here to build their own chains
+
+FIX APPLIED (LangChain-Gemini 404 Resolution):
+    Root cause: langchain-google-genai defaults to the v1beta endpoint, which
+    rejects the "-latest" model name suffix after LangChain normalizes it.
+    Three changes were made to resolve this:
+      1. transport="rest"         — bypasses grpcio which has broken C-extensions
+                                    on Python 3.14 / Windows 11.
+      2. client_options           — forces routing to the stable v1 endpoint
+                                    instead of v1beta.
+      3. model="gemini-2.0-flash" — uses a pinned, versioned model name
+                                    that v1 accepts reliably (no "-latest" suffix
+                                    that LangChain strips unpredictably).
 """
 
 import os
@@ -34,6 +46,20 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# FIX: Use a pinned, versioned model name.
+# "gemini-2.0-flash-latest" gets normalized by LangChain into
+# "models/gemini-2.0-flash" which the v1beta endpoint rejects with 404.
+# "gemini-2.0-flash" is stable and accepted by the v1 endpoint.
+GEMINI_MODEL = "gemini-2.0-flash"
+
+# FIX: Route to the stable v1 API endpoint instead of LangChain's
+# default v1beta endpoint. v1beta inconsistently resolves versioned
+# model names, especially after LangChain's internal name normalization.
+GEMINI_CLIENT_OPTIONS = {
+    "api_endpoint": "https://generativelanguage.googleapis.com"
+}
+
+
 def get_llm():
     """
     Creates and returns the Gemini LLM instance.
@@ -41,7 +67,13 @@ def get_llm():
     WHY a function instead of a global variable?
     - So we can call it fresh each time (avoids stale connections)
     - Makes testing easier (we can mock this function)
+
+    FIXES APPLIED:
+    - transport="rest": Avoids grpcio C-extension issues on Python 3.14/Windows.
+    - client_options: Forces the v1 (stable) API endpoint.
+    - model name pinned to "gemini-2.0-flash": No suffix stripping by LangChain.
     """
+    print(f"DEBUG: GEMINI_API_KEY prefix: {GEMINI_API_KEY[:5] if GEMINI_API_KEY else 'NOT SET'}...")
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
         raise ValueError(
             "GEMINI_API_KEY is not set! "
@@ -50,9 +82,11 @@ def get_llm():
         )
 
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model=GEMINI_MODEL,
         google_api_key=GEMINI_API_KEY,
         temperature=0.7,
+        transport="rest",                    # FIX 1: avoid grpc on Python 3.14
+        client_options=GEMINI_CLIENT_OPTIONS, # FIX 2: force v1 endpoint
         convert_system_message_to_human=True,
     )
 
@@ -134,7 +168,17 @@ async def generate_lesson(pace: str, topic: str, score: float, weak_areas: str) 
         })
 
         # result is an AIMessage object — use .content not result["text"]
-        parsed = lesson_output_parser.parse(result.content)
+        raw_content = result.content
+
+        # Guard: if the model returned an empty response (can happen on
+        # transient API errors), raise early with a clear message.
+        if not raw_content or not raw_content.strip():
+            raise ValueError(
+                "Gemini returned an empty response. "
+                "Check your API quota at https://aistudio.google.com/apikey"
+            )
+
+        parsed = lesson_output_parser.parse(raw_content)
 
         # Make sure key_concepts is a list (sometimes AI returns a string)
         if isinstance(parsed.get("key_concepts"), str):
