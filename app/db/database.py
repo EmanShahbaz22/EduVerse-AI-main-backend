@@ -25,6 +25,10 @@ quiz_submissions_collection = db["quizSubmissions"]
 users_collection = db["users"]
 subscription_plans_collection = db["subscriptionPlans"]
 
+# ── AI / Adaptive Learning collections (Member 1) ──
+ai_generated_lessons_collection = db["aiGeneratedLessons"]
+student_classifications_collection = db["studentClassifications"]
+
 
 async def ensure_indexes():
     await users_collection.create_index("email", name="users_email_idx")
