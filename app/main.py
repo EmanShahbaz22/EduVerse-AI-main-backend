@@ -8,6 +8,7 @@ from app.routers.roles import admins, students, super_admin, teachers
 from app.core.settings import get_cors_origins
 
 from app.routers import (
+    adaptive_learning,
     assignment_submissions,
     assignments,
     courses,
@@ -123,3 +124,6 @@ app.include_router(payments.router)
 
 # File uploads
 app.include_router(uploads.router)
+
+# Adaptive Learning (AI)
+app.include_router(adaptive_learning.router)
