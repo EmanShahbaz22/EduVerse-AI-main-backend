@@ -19,12 +19,19 @@ def _ensure_objectid(_id: str, name: str = "id"):
 # -------------------------
 # Convert MongoDB document → API format (Python dict)
 # -------------------------
-def serialize_tenant(tenant: dict, metrics: Optional[dict] = None) -> dict:
+def serialize_tenant(tenant: dict, metrics: Optional[dict] = None, plan_doc: Optional[dict] = None) -> dict:
     metrics = metrics or {}
     raw_logo = tenant.get("tenantLogoUrl")
     tenant_logo = str(raw_logo).strip() if raw_logo is not None else None
     if not tenant_logo:
         tenant_logo = None
+        
+    # Dynamically resolve plan info if plan_doc is provided
+    plan_name = plan_doc.get("name") if plan_doc else tenant.get("subscriptionPlan")
+    plan_category = plan_doc.get("category", "free") if plan_doc else tenant.get("subscriptionCategory", "free")
+    plan_cycle = plan_doc.get("billingCycle") if plan_doc else tenant.get("subscriptionBillingCycle")
+    plan_price = plan_doc.get("pricePerMonth") if plan_doc else tenant.get("subscriptionPriceMonthly")
+    
     return {
         "id": str(tenant["_id"]),  # convert ObjectId -> string
         "tenantName": tenant["tenantName"],
@@ -36,10 +43,10 @@ def serialize_tenant(tenant: dict, metrics: Optional[dict] = None) -> dict:
         "subscriptionId": (
             str(tenant.get("subscriptionId")) if tenant.get("subscriptionId") else None
         ),
-        "subscriptionCategory": tenant.get("subscriptionCategory", "free"),
-        "subscriptionPlan": tenant.get("subscriptionPlan"),
-        "subscriptionBillingCycle": tenant.get("subscriptionBillingCycle"),
-        "subscriptionPriceMonthly": tenant.get("subscriptionPriceMonthly"),
+        "subscriptionCategory": plan_category,
+        "subscriptionPlan": plan_name,
+        "subscriptionBillingCycle": plan_cycle,
+        "subscriptionPriceMonthly": plan_price,
         "subscriptionStartDate": tenant.get("subscriptionStartDate"),
         "subscriptionExpiryDate": tenant.get("subscriptionExpiryDate"),
         "subscriptionNotes": tenant.get("subscriptionNotes"),
@@ -52,10 +59,17 @@ def serialize_tenant(tenant: dict, metrics: Optional[dict] = None) -> dict:
 
 
 async def _tenant_metrics(tenant_id: ObjectId) -> dict:
+    tenant_courses = [doc["_id"] async for doc in db.courses.find({"tenantId": tenant_id}, {"_id": 1})]
+    match_query = {
+        "$or": [
+            {"tenantId": tenant_id},
+            {"enrolledCourses": {"$in": [str(c) for c in tenant_courses] + tenant_courses}}
+        ]
+    }
     return {
-        "courses": await db.courses.count_documents({"tenantId": tenant_id}),
+        "courses": len(tenant_courses),
         "teachers": await db.teachers.count_documents({"tenantId": tenant_id}),
-        "students": await db.students.count_documents({"tenantId": tenant_id}),
+        "students": await db.students.count_documents(match_query),
     }
 
 
@@ -172,7 +186,10 @@ async def get_all_tenants(
     results = []
     for tenant in tenants:
         metrics = await _tenant_metrics(tenant["_id"])
-        results.append(serialize_tenant(tenant, metrics))
+        plan_doc = None
+        if tenant.get("subscriptionId"):
+             plan_doc = await db.subscriptionPlans.find_one({"_id": tenant["subscriptionId"]})
+        results.append(serialize_tenant(tenant, metrics, plan_doc))
     return results
 
 
@@ -185,7 +202,10 @@ async def get_tenant(_id: str):
     if not tenant:
         return None
     metrics = await _tenant_metrics(tenant["_id"])
-    return serialize_tenant(tenant, metrics)
+    plan_doc = None
+    if tenant.get("subscriptionId"):
+         plan_doc = await db.subscriptionPlans.find_one({"_id": tenant["subscriptionId"]})
+    return serialize_tenant(tenant, metrics, plan_doc)
 
 
 # -------------------------
@@ -223,11 +243,27 @@ async def update_tenant(_id: str, updates: dict):
         {"_id": ObjectId(_id), "isDeleted": False}, {"$set": safe_updates}
     )
 
+    # Propagate changes to the default Admin associated with this Tenant
+    admin_updates = {}
+    if "contactNumber" in safe_updates:
+        admin_updates["contactNo"] = safe_updates["contactNumber"]
+    if "address" in safe_updates:
+        admin_updates["country"] = safe_updates["address"]
+        
+    if admin_updates:
+        await db.users.update_one(
+            {"tenantId": ObjectId(_id), "role": "admin"},
+            {"$set": admin_updates}
+        )
+
     tenant = await db.tenants.find_one({"_id": ObjectId(_id), "isDeleted": False})
     if not tenant:
         return None
     metrics = await _tenant_metrics(tenant["_id"])
-    return serialize_tenant(tenant, metrics)
+    plan_doc = None
+    if tenant.get("subscriptionId"):
+         plan_doc = await db.subscriptionPlans.find_one({"_id": tenant["subscriptionId"]})
+    return serialize_tenant(tenant, metrics, plan_doc)
 
 
 # -------------------------

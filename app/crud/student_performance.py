@@ -27,6 +27,7 @@ class StudentPerformanceCRUD:
                 "level": 1,
                 "xpToNextLevel": 300,
                 "badges": [],
+                "pointsHistory": [],
                 "certificates": [],
                 "weeklyStudyTime": [],
                 "courseStats": [],
@@ -57,10 +58,13 @@ class StudentPerformanceCRUD:
         return doc
 
     @staticmethod
-    async def add_points(student_id: str, tenant_id: str, points: int):
+    async def add_points(student_id: str, tenant_id: str, points: int, reason: str = "Course Activity"):
         await COL.update_one(
             _query(student_id, tenant_id),
-            {"$inc": {"totalPoints": points, "pointsThisWeek": points, "xp": points}},
+            {
+                "$inc": {"totalPoints": points, "pointsThisWeek": points, "xp": points},
+                "$push": {"pointsHistory": {"points": points, "reason": reason, "date": datetime.utcnow()}}
+            },
         )
         updated = await StudentPerformanceCRUD.get_student_performance(
             student_id, tenant_id
@@ -149,15 +153,68 @@ class StudentPerformanceCRUD:
                 },
             )
         if completion == 100:
-            exists = await COL.find_one({**q, "badges.courseId": course_id})
+            exists = await COL.find_one({**q, "certificates.courseId": course_id})
             if not exists:
-                await StudentPerformanceCRUD.add_badge(
+                import os
+                import uuid
+                from fpdf import FPDF
+                from app.db.database import courses_collection
+                
+                course_doc = await courses_collection.find_one({"_id": ObjectId(course_id)})
+                student_doc = await COL.find_one(q)
+                
+                course_name = course_doc.get("title", "Unknown Course") if course_doc else "Unknown Course"
+                student_name = student_doc.get("studentName", "Student") if student_doc else "Student"
+                
+                # Generate Native Python PDF
+                pdf = FPDF(orientation="landscape", format="A4")
+                pdf.add_page()
+                
+                # Frame & styling
+                pdf.set_line_width(5)
+                pdf.set_draw_color(30, 58, 138)
+                pdf.rect(10, 10, 277, 190)
+                
+                # Title Layer
+                pdf.set_font("helvetica", "B", 40)
+                pdf.set_text_color(30, 58, 138)
+                pdf.cell(0, 40, "Certificate of Completion", align="C", new_x="LMARGIN", new_y="NEXT")
+                
+                pdf.set_font("helvetica", "", 20)
+                pdf.set_text_color(55, 65, 81)
+                pdf.cell(0, 20, "This proudly certifies that", align="C", new_x="LMARGIN", new_y="NEXT")
+                
+                # Student Name Layer
+                pdf.set_font("helvetica", "B", 45)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 30, student_name, align="C", new_x="LMARGIN", new_y="NEXT")
+                
+                pdf.set_font("helvetica", "", 20)
+                pdf.set_text_color(55, 65, 81)
+                pdf.cell(0, 20, "has successfully completed the course", align="C", new_x="LMARGIN", new_y="NEXT")
+                
+                # Dynamic Course Layer
+                pdf.set_font("helvetica", "B", 30)
+                pdf.set_text_color(30, 58, 138)
+                pdf.cell(0, 30, course_name, align="C", new_x="LMARGIN", new_y="NEXT")
+                
+                pdf.set_font("helvetica", "I", 14)
+                pdf.set_text_color(107, 114, 128)
+                pdf.cell(0, 20, f"Awarded on: {datetime.utcnow().strftime('%B %d, %Y')}", align="C", new_x="LMARGIN", new_y="NEXT")
+                
+                # Directory routing & File Save
+                file_id = f"cert_{uuid.uuid4().hex}.pdf"
+                upload_dir = os.path.join(os.path.dirname(__file__), "..", "..", "uploads", "certificates")
+                os.makedirs(upload_dir, exist_ok=True)
+                pdf.output(os.path.join(upload_dir, file_id))
+                
+                await StudentPerformanceCRUD.add_certificate(
                     student_id,
                     tenant_id,
                     {
                         "courseId": course_id,
-                        "name": "Course Completer",
-                        "icon": "completion.png",
+                        "title": f"Certificate of Completion: {course_name}",
+                        "file": file_id
                     },
                 )
         return await StudentPerformanceCRUD.get_student_performance(

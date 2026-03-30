@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 class AddPointsRequest(BaseModel):
     points: int
+    reason: Optional[str] = "Course Activity"
 
 
 class WeeklyTimeRequest(BaseModel):
@@ -35,6 +36,7 @@ class StudentPerformanceResponse(BaseModel):
 
     courseStats: Optional[List[dict]] = []
     badges: Optional[List[dict]] = []
+    pointsHistory: Optional[List[dict]] = []
     certificates: Optional[List[dict]] = []
     weeklyStudyTime: Optional[List[dict]] = []
     LeaderBoard: Optional[List[dict]] = []

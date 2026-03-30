@@ -20,13 +20,19 @@ async def signup_admin(payload: AdminSignupRequest):
             detail="Organization name is required",
         )
 
+    # Fetch default started plan
+    default_plan = await db.subscriptionPlans.find_one({"code": "starter-basic"})
+    plan_id_str = str(default_plan["_id"]) if default_plan else None
+
     # Create Tenant using tenant CRUD
     tenant_logo = (payload.tenantLogoUrl or "").strip() or None
     tenant_data = {
         "tenantName": payload.tenantName.strip(),
         "tenantLogoUrl": tenant_logo,
         "adminEmail": payload.email,
-        # "subscriptionId": payload.subscriptionId | None,
+        "contactNumber": payload.contactNo,
+        "address": payload.country,
+        "subscriptionId": plan_id_str
     }
     try:
         tenant = await create_tenant(

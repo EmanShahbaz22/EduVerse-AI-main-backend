@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 
 from app.crud.users import create_user
 from app.db.database import db, student_performance_collection
+from app.utils.limits import check_tenant_limits
 
 
 def _extract_tenant_id(payload: dict, *, required: bool = True) -> str | None:
@@ -53,6 +54,9 @@ async def signup_student(payload: dict) -> dict:
     # Students are global accounts by default; tenant context is optional.
     tenant_id = _extract_tenant_id(payload, required=False)
     await _ensure_tenant_exists(tenant_id)
+    
+    if tenant_id:
+        await check_tenant_limits(tenant_id, "students")
 
     user_payload = {
         "fullName": payload.get("fullName"),
@@ -124,6 +128,8 @@ async def signup_student(payload: dict) -> dict:
 async def signup_teacher(payload: dict) -> dict:
     tenant_id = _extract_tenant_id(payload)
     await _ensure_tenant_exists(tenant_id)
+    
+    await check_tenant_limits(tenant_id, "teachers")
 
     user_payload = {
         "fullName": payload.get("fullName"),

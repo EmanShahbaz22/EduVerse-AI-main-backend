@@ -9,6 +9,7 @@ from app.crud.courses.helpers import (
     clean_update_data,
     serialize_course,
 )
+from app.utils.limits import check_tenant_limits
 
 courses_col, students_col, _ = get_collections()
 
@@ -32,6 +33,9 @@ async def create_course(course_data: CourseCreate) -> dict:
         if await db.teachers.find_one({"_id": teacher_id}):
             raise ValueError("Teacher belongs to different tenant")
         raise ValueError(f"Teacher not found: {d['teacherId']}")
+
+    # Enforce Subscription Constraints
+    await check_tenant_limits(tenant_id, "courses")
 
     d["tenantId"], d["teacherId"] = tenant_id, teacher_id
     d["createdAt"] = d["updatedAt"] = datetime.utcnow()

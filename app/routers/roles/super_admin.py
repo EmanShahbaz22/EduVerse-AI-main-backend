@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.auth.dependencies import get_current_user, require_role
-from app.schemas.super_admin import SuperAdminResponse, SuperAdminUpdate
-from app.crud.super_admin import get_superadmin_by_user, update_superadmin
+from app.schemas.super_admin import SuperAdminResponse, SuperAdminUpdate, SuperAdminDashboardResponse
+from app.crud.super_admin import get_superadmin_by_user, update_superadmin, get_super_admin_dashboard_stats
 
 router = APIRouter(
     prefix="/super-admin",
@@ -33,3 +33,9 @@ async def update_my_profile(
         raise HTTPException(404, "Super Admin profile not found")
 
     return updated
+
+@router.get("/dashboard/stats", response_model=SuperAdminDashboardResponse)
+async def get_dashboard_data(current_user=Depends(get_current_user)):
+    # Requires super_admin role middleware to pass (configured in router router)
+    stats = await get_super_admin_dashboard_stats()
+    return stats

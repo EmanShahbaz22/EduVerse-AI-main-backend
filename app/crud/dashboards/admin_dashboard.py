@@ -31,7 +31,20 @@ async def get_all_students(tenant_id: str):
         return []
 
     tenant_oid = ObjectId(tenant_id)
-    async for s in db.students.find({"tenantId": tenant_oid}):
+
+    # Find all courses for this tenant first
+    tenant_courses = [str(doc["_id"]) async for doc in db.courses.find({"tenantId": tenant_oid}, {"_id": 1})]
+    tenant_courses_oids = [ObjectId(cid) for cid in tenant_courses]
+    
+    # Match students natively in tenant OR enrolled in a tenant course
+    query = {
+        "$or": [
+            {"tenantId": tenant_oid},
+            {"enrolledCourses": {"$in": tenant_courses + tenant_courses_oids}}
+        ]
+    }
+
+    async for s in db.students.find(query):
         user_oid = _to_objectid(s.get("userId"))
         if not user_oid:
             continue
@@ -82,6 +95,8 @@ async def get_all_teachers(tenant_id: str):
                 "email": user.get("email", ""),
                 "status": user.get("status", "active"),
                 "role": user.get("role", "teacher"),
+                "contactNo": user.get("contactNo", ""),
+                "country": user.get("country", ""),
                 "assignedCourses": [str(c) for c in t.get("assignedCourses", [])],
                 "qualifications": t.get("qualifications", []),
                 "subjects": t.get("subjects", []),

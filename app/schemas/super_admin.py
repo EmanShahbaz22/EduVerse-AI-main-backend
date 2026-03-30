@@ -27,3 +27,26 @@ class SuperAdminResponse(BaseModel):
     updatedAt: datetime
 
     model_config = {"from_attributes": True}
+
+class ActivityDataPoint(BaseModel):
+    category: str
+    value: int
+    color: str
+
+class OrganizationRow(BaseModel):
+    name: str
+    activeCourses: int
+    users: int
+
+class TenantGrowthPoint(BaseModel):
+    month: str
+    tenants: int
+
+class SuperAdminDashboardResponse(BaseModel):
+    totalTenants: int
+    activeUsers: str
+    totalCourses: int
+    revenue: str
+    tenantGrowthData: list[TenantGrowthPoint]
+    activityData: list[ActivityDataPoint]
+    organizationRows: list[OrganizationRow]

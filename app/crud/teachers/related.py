@@ -82,10 +82,55 @@ async def get_teacher_dashboard(teacher_id: str):
 
 
 async def get_teacher_students(teacher_id: str):
-    return [
-        s
-        async for s in db.students.find({"teacherId": to_oid(teacher_id, "teacherId")})
+    # Find all courses taught by this teacher
+    teacher_courses = [
+        str(c["_id"]) 
+        async for c in db.courses.find({"teacherId": to_oid(teacher_id, "teacherId")}, {"_id": 1})
     ]
+    teacher_courses_oids = [ObjectId(cid) for cid in teacher_courses]
+    
+    if not teacher_courses:
+        return []
+
+    # Find all students enrolled in any of these courses
+    pipeline = [
+        {
+            "$match": {
+                "enrolledCourses": {
+                    "$in": teacher_courses + teacher_courses_oids
+                }
+            }
+        },
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "userId",
+                "foreignField": "_id",
+                "as": "userDetails",
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$userDetails",
+                "preserveNullAndEmptyArrays": True
+            }
+        }
+    ]
+
+    results = []
+    async for doc in db.students.aggregate(pipeline):
+        ui = doc.get("userDetails", {}) or {}
+        results.append({
+            "id": str(doc["_id"]),
+            "name": ui.get("fullName", ""),
+            "email": ui.get("email", ""),
+            "class": doc.get("className", "N/A"),
+            "rollNo": doc.get("rollNo", "N/A"),
+            "status": ui.get("status", "Inactive"),
+            "profileImageURL": ui.get("profileImageURL", ""),
+        })
+
+    return results
 
 
 async def get_teacher_courses(teacher_id: str):

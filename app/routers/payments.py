@@ -2,6 +2,8 @@
 import asyncio
 import os
 
+from datetime import datetime
+
 import stripe
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Depends, Request
@@ -28,6 +30,10 @@ STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
+
+@router.get("/config")
+async def get_payment_config():
+    return {"publishableKey": STRIPE_PUBLISHABLE_KEY}
 
 
 def _ensure_objectid(value: str, field_name: str):
@@ -187,7 +193,6 @@ async def stripe_webhook(request: Request):
         # Mark payment as completed
         await update_payment_status(intent_id, "completed")
 
-        # Auto-enroll the student
         if course_id and student_id:
             resolved = await _resolve_student_profile(student_id, tenant_id)
             if resolved:
@@ -211,6 +216,45 @@ async def stripe_webhook(request: Request):
     elif event["type"] == "payment_intent.payment_failed":
         intent = event["data"]["object"]
         await update_payment_status(intent["id"], "failed")
+
+    elif event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        metadata = session.get("metadata", {})
+        
+        # Check if this is a Tenant Upgrade flow
+        if metadata.get("type") == "tenant_upgrade":
+            tenant_id = metadata.get("tenantId")
+            plan_id = metadata.get("planId")
+            if tenant_id and plan_id:
+                from datetime import timedelta
+                now = datetime.utcnow()
+                plan_doc = await db.subscriptionPlans.find_one({"_id": ObjectId(plan_id)})
+                billing_cycle = plan_doc.get("billingCycle", "monthly") if plan_doc else "monthly"
+                if billing_cycle == "yearly":
+                    expiry = now + timedelta(days=365)
+                else:
+                    expiry = now + timedelta(days=30)
+                
+                await db.tenants.update_one(
+                    {"_id": ObjectId(tenant_id)},
+                    {"$set": {
+                        "subscriptionId": ObjectId(plan_id),
+                        "stripeSubscriptionId": session.get("subscription"),
+                        "subscriptionStartDate": now,
+                        "subscriptionExpiryDate": expiry,
+                        "updatedAt": now
+                    }}
+                )
+                
+        # Check if this is a Student Course Purchase flow
+        elif metadata.get("type") == "course_purchase":
+            student_id = metadata.get("studentId")
+            course_id = metadata.get("courseId")
+            if student_id and course_id:
+                await db.students.update_one(
+                    {"userId": ObjectId(student_id)},
+                    {"$addToSet": {"enrolledCourses": str(course_id)}}
+                )
 
     return {"status": "ok"}
 

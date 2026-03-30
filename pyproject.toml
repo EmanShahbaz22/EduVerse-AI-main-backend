@@ -5,17 +5,50 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "bcrypt==3.2.2",
-    "email-validator>=2.3.0",
-    "fastapi>=0.121.1",
-    "motor>=3.7.1",
-    "passlib[bcrypt]==1.7.4",
-    "pydantic>=2.12.4",
-    "pyjwt>=2.10.1",
-    "python-dotenv>=1.2.1",
+    # Core API
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
     "python-multipart>=0.0.20",
-    "uvicorn>=0.38.0",
-    "stripe>=13.0.0",
+
+    # Auth & Security
+    "bcrypt>=4.2.1",
+    "passlib[bcrypt]==1.7.4",
+    "pyjwt>=2.10.1",
+    "python-jose>=3.3.0",
+    "argon2-cffi>=23.1.0",
+    "cryptography>=44.0.1",
+
+    # Database
+    "motor>=3.7.0",
+    "pymongo>=4.15.0",
+
+    # Validation & Config
+    "pydantic>=2.10.6",
+    "pydantic-settings>=2.7.1",
+    "email-validator>=2.2.0",
+    "python-dotenv>=1.0.1",
+
+    # LangChain / AI
+    "langchain>=0.3.17",
+    "langchain-community>=0.3.16",
+    "langchain-core>=0.3.37",
+    "langchain-google-genai>=2.0.10",
+    "langchain-text-splitters>=0.3.6",
+    "google-generativeai>=0.8.4",
+
+    # HTTP
+    "httpx>=0.28.1",
+    "requests>=2.32.3",
+
+    # Payments
+    "stripe>=11.5.0",
+
+    # Utilities
+    "pyyaml>=6.0.2",
+    "orjson>=3.10.15",
+    "filetype>=1.2.0",
+    "tqdm>=4.67.1",
+    # "uuid-utils>=0.9.0",
 ]
 
 [project.optional-dependencies]

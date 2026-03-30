@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, status
+from pydantic import BaseModel
 from bson import ObjectId
 from datetime import datetime
 from dotenv import load_dotenv
@@ -38,6 +39,148 @@ def _to_oid(value: str, field_name: str) -> ObjectId:
     return ObjectId(value)
 
 
+# ─── Billing & Usage Reporting ────────────────────────────────────────
+
+@router.get("/billing/usage")
+async def get_tenant_billing_usage(current_user=Depends(get_current_user)):
+    tenant_id = _tenant_oid(current_user)
+    tenant = await db.tenants.find_one({"_id": tenant_id, "isDeleted": {"$ne": True}})
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant context not found")
+
+    subscription_id = tenant.get("subscriptionId")
+    if not subscription_id:
+        plan = {
+            "name": "Fallback Free",
+            "maxStudents": 50,
+            "maxTeachers": 5,
+            "maxCourses": 10,
+            "storageGb": 2,
+            "pricePerMonth": 0,
+        }
+    else:
+        plan = await db.subscriptionPlans.find_one({
+            "_id": ObjectId(subscription_id), "isDeleted": {"$ne": True}
+        })
+        if not plan:
+            plan = {
+                "name": "Unknown Expired Plan",
+                "maxStudents": 0, "maxTeachers": 0, "maxCourses": 0, "storageGb": 0, "pricePerMonth": 0
+            }
+        else:
+            plan["id"] = str(plan["_id"])
+            plan.pop("_id", None)
+
+    # To accurately count students, we must match natively created students + students globally enrolled in this tenant's courses.
+    tenant_courses = [c["_id"] async for c in db.courses.find({"tenantId": tenant_id}, {"_id": 1})]
+    students_used = await db.students.count_documents({
+        "$or": [
+            {"tenantId": tenant_id},
+            {"enrolledCourses": {"$in": [str(c) for c in tenant_courses] + tenant_courses}}
+        ]
+    })
+    
+    teachers_used = await db.teachers.count_documents({"tenantId": tenant_id})
+    courses_used = await db.courses.count_documents({"tenantId": tenant_id})
+    storage_used_bytes = tenant.get("totalStorageUsedBytes", 0)
+
+    # Convert bytes to GBs loosely 
+    storage_used_gb = round(storage_used_bytes / (1024 * 1024 * 1024), 4)
+
+    return {
+        "plan": plan,
+        "usage": {
+            "students": students_used,
+            "teachers": teachers_used,
+            "courses": courses_used,
+            "storageGb": storage_used_gb,
+            "storageBytes": storage_used_bytes,
+        }
+    }
+
+@router.get("/billing/plans")
+async def get_available_billing_plans(current_user=Depends(get_current_user)):
+    cursor = db.subscriptionPlans.find({"isDeleted": False, "status": "active"}).sort("pricePerMonth", 1)
+    plans = await cursor.to_list(length=100)
+    for p in plans:
+        p["id"] = str(p["_id"])
+        p.pop("_id", None)
+    return plans
+
+class CheckoutPlanRequest(BaseModel):
+    planId: str
+
+@router.post("/billing/checkout")
+async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends(get_current_user)):
+    import stripe
+    import os
+    from datetime import timedelta
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
+    
+    tenant_id = _tenant_oid(current_user)
+    
+    plan = await db.subscriptionPlans.find_one({
+        "_id": ObjectId(req.planId), "isDeleted": {"$ne": True}
+    })
+    if not plan:
+        raise HTTPException(status_code=404, detail="Subscription Plan not found")
+
+    price = plan.get("pricePerMonth", 0)
+    
+    # Free/downgrade plans: apply instantly without Stripe
+    if price <= 0:
+        now = datetime.utcnow()
+        billing_cycle = plan.get("billingCycle", "monthly")
+        expiry = now + timedelta(days=365) if billing_cycle == "yearly" else now + timedelta(days=30)
+        await db.tenants.update_one(
+            {"_id": tenant_id},
+            {"$set": {
+                "subscriptionId": ObjectId(req.planId),
+                "subscriptionStartDate": now,
+                "subscriptionExpiryDate": expiry,
+                "updatedAt": now
+            }}
+        )
+        return {"success": True, "message": f"Switched to {plan['name']}"}
+
+    # Map billingCycle to Stripe interval
+    cycle_map = {"monthly": "month", "yearly": "year", "weekly": "week"}
+    raw_cycle = plan.get("billingCycle", "monthly").lower()
+    stripe_interval = cycle_map.get(raw_cycle, "month")
+
+    try:
+        session = stripe.checkout.Session.create(
+            ui_mode="embedded",
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'usd',
+                    'product_data': {
+                        'name': plan['name'],
+                        'description': f"SaaS Upgrade to {plan['name']} tier",
+                    },
+                    'unit_amount': int(price * 100),
+                    'recurring': {
+                        'interval': stripe_interval
+                    }
+                },
+                'quantity': 1,
+            }],
+            mode='subscription',
+            return_url=f"{FRONTEND_URL}/admin/settings?billing_success=true",
+            metadata={
+                "tenantId": str(tenant_id),
+                "planId": str(plan["_id"]),
+                "type": "tenant_upgrade"
+            }
+        )
+        return {"clientSecret": session.client_secret}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 def _tenant_oid(current_user: dict) -> ObjectId:
     tenant_id = current_user.get("tenant_id")
     if not tenant_id or not ObjectId.is_valid(tenant_id):
@@ -69,6 +212,41 @@ async def change_password(
     await change_admin_me_password(
         current_user, payload.oldPassword, payload.newPassword
     )
+
+
+# ------------------ System Settings -----------------
+
+
+@router.get("/settings/system")
+async def get_system_settings(current_user=Depends(get_current_user)):
+    tenant_oid = _tenant_oid(current_user)
+    tenant = await db.tenants.find_one({"_id": tenant_oid})
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {
+        "tenantName": tenant.get("tenantName", ""),
+        "tenantLogoUrl": tenant.get("tenantLogoUrl", "")
+    }
+
+
+@router.put("/settings/system")
+async def update_system_settings(data: dict, current_user=Depends(get_current_user)):
+    tenant_oid = _tenant_oid(current_user)
+    updates = {}
+    if "tenantName" in data and isinstance(data["tenantName"], str):
+        updates["tenantName"] = data["tenantName"]
+    if "tenantLogoUrl" in data and isinstance(data["tenantLogoUrl"], str):
+        updates["tenantLogoUrl"] = data["tenantLogoUrl"]
+    
+    if updates:
+        updates["updatedAt"] = datetime.utcnow()
+        await db.tenants.update_one({"_id": tenant_oid}, {"$set": updates})
+        
+    updated_tenant = await db.tenants.find_one({"_id": tenant_oid})
+    return {
+        "tenantName": updated_tenant.get("tenantName", ""),
+        "tenantLogoUrl": updated_tenant.get("tenantLogoUrl", "")
+    }
 
 
 # ------------------ Dashboard ------------------

@@ -105,6 +105,7 @@ async def get_all_courses(
 
 
 async def get_marketplace_courses(
+    tenant_id: Optional[str] = None,
     teacher_id: Optional[str] = None,
     category: Optional[str] = None,
     search: Optional[str] = None,
@@ -115,6 +116,9 @@ async def get_marketplace_courses(
         "isPublic": True,
         "status": {"$regex": "^published$", "$options": "i"},
     }
+
+    if tenant_id and ObjectId.is_valid(tenant_id):
+        query["tenantId"] = ObjectId(tenant_id)
 
     if teacher_id:
         if not ObjectId.is_valid(teacher_id):
@@ -307,7 +311,7 @@ async def get_enrolled_students(course_id: str, tenant_id: str) -> dict:
         return {"success": False, "message": "Course not found or wrong tenant"}
 
     pipeline = [
-        {"$match": {"tenantId": tenant_oid, "enrolledCourses": course_id}},
+        {"$match": {"enrolledCourses": {"$in": [course_id, ObjectId(course_id)]}}},
         {
             "$lookup": {
                 "from": "users",

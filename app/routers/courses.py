@@ -139,8 +139,9 @@ async def get_courses(
     limit: int = Query(100, ge=1, le=100),
     current_user=Depends(get_current_user),
 ):
-    if current_user["role"] == "student":
+    if current_user["role"] == "student" or not tenantId:
         result = await course_crud.get_marketplace_courses(
+            tenant_id=tenantId,
             teacher_id=teacher_id,
             category=category,
             search=search,

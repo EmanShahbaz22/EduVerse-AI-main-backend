@@ -40,6 +40,13 @@ async def get_teacher_student_performances(teacher_id: str, tenantId: str):
     """
     return await StudentPerformanceCRUD.get_teacher_performances(teacher_id, tenantId)
 
+@router.get("/teacher/{teacher_id}/student/{student_id}/details")
+async def get_detailed_teacher_student_performance(teacher_id: str, student_id: str, tenantId: str):
+    """
+    Get detailed breakdown of a student's quiz and assignment scores for the teacher's courses.
+    """
+    from app.crud.detailed_student_performance import get_detailed_student_performance
+    return await get_detailed_student_performance(teacher_id, student_id, tenantId)
 
 # -------------------- STUDENT PERFORMANCE --------------------
 @router.get("/{tenantId}/{studentId}")
@@ -100,5 +107,5 @@ async def weekly_time(tenantId: str, studentId: str, weekStart: str, minutes: in
 
 # -------------------- POINTS --------------------
 @router.post("/{tenantId}/{studentId}/add-points")
-async def add_points(tenantId: str, studentId: str, points: int):
-    return await StudentPerformanceCRUD.add_points(studentId, tenantId, points)
+async def add_points(tenantId: str, studentId: str, points: int, reason: str = "Course Activity"):
+    return await StudentPerformanceCRUD.add_points(studentId, tenantId, points, reason)

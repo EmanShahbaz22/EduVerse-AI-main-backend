@@ -20,7 +20,6 @@ class TeacherCreate(BaseModel):
 
 class TeacherUpdate(BaseModel):
     fullName: Optional[str] = None
-    email: Optional[EmailStr] = None
     profileImageURL: Optional[str] = None
     assignedCourses: Optional[List[str]] = None
     contactNo: Optional[str] = None

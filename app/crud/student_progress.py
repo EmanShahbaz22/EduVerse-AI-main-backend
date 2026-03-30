@@ -8,20 +8,31 @@ class ProgressCRUD:
     def __init__(self):
         self.collection = db.student_progress
 
-    async def get_or_create_progress(self, student_id: str, course_id: str, tenant_id: str) -> dict:
+    async def get_or_create_progress(self, student_id: str, course_id: str, tenant_id: str = None) -> dict:
         """Fetch course progress or initialize if not exists."""
+        # Clean tenant_id or derive from course
+        actual_tenant_oid = None
+        if tenant_id and ObjectId.is_valid(tenant_id):
+            actual_tenant_oid = ObjectId(tenant_id)
+        else:
+            course = await db.courses.find_one({"_id": ObjectId(course_id)})
+            if course and course.get("tenantId"):
+                 actual_tenant_oid = course.get("tenantId")
+        
         query = {
             "studentId": student_id,
             "courseId": course_id,
-            "tenantId": ObjectId(tenant_id)
         }
+        if actual_tenant_oid:
+             query["tenantId"] = actual_tenant_oid
+
         progress = await self.collection.find_one(query)
         
         if not progress:
             progress = {
                 "studentId": student_id,
                 "courseId": course_id,
-                "tenantId": ObjectId(tenant_id),
+                "tenantId": actual_tenant_oid,
                 "completedLessons": [],
                 "progressPercentage": 0,
                 "isCompleted": False,
@@ -33,21 +44,24 @@ class ProgressCRUD:
         else:
             progress["_id"] = str(progress["_id"])
             
-        progress["tenantId"] = str(progress["tenantId"])
+        progress["tenantId"] = str(progress.get("tenantId"))
         return progress
 
-    async def mark_lesson_complete(self, student_id: str, course_id: str, tenant_id: str, lesson_id: str) -> dict:
+    async def mark_lesson_complete(self, student_id: str, course_id: str, tenant_id: str = None, lesson_id: str = None) -> dict:
         """Mark a lesson as complete and update course percentage."""
-        query = {
-            "studentId": student_id,
-            "courseId": course_id,
-            "tenantId": ObjectId(tenant_id)
-        }
-        
         # 1. Get total lessons from course
         course = await db.courses.find_one({"_id": ObjectId(course_id)})
         if not course:
             raise ValueError("Course not found")
+
+        actual_tenant_oid = course.get("tenantId")
+
+        query = {
+            "studentId": student_id,
+            "courseId": course_id
+        }
+        if actual_tenant_oid:
+            query["tenantId"] = actual_tenant_oid
             
         total_lessons = 0
         for m in course.get("modules", []):
@@ -137,14 +151,16 @@ class ProgressCRUD:
 
     async def get_student_course_progress(self, student_id: str, tenant_id: str) -> List[dict]:
         """Get progress for all courses a student is enrolled in."""
-        cursor = self.collection.find({
-            "studentId": student_id,
-            "tenantId": ObjectId(tenant_id)
-        })
+        query = {"studentId": student_id}
+        if tenant_id and ObjectId.is_valid(tenant_id):
+            query["tenantId"] = ObjectId(tenant_id)
+
+        cursor = self.collection.find(query)
         results = await cursor.to_list(length=100)
         for r in results:
             r["_id"] = str(r["_id"])
-            r["tenantId"] = str(r["tenantId"])
+            if "tenantId" in r:
+                r["tenantId"] = str(r["tenantId"])
         return results
 
 progress_crud = ProgressCRUD()

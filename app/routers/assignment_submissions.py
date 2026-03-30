@@ -40,9 +40,12 @@ def clean_updates(data: dict):
 @router.post("/", response_model=AssignmentSubmissionResponse)
 async def create_submission_route(
     data: AssignmentSubmissionCreate,
-    current_user=Depends(require_role("student")),
-    _=Depends(require_tenant),  # enforce tenant
+    current_user=Depends(require_role("student"))
 ):
+    # Enforce tenant for non-students
+    if current_user["role"] != "student" and not current_user.get("tenant_id"):
+        raise HTTPException(status_code=403, detail="Tenant context required")
+
     if not data.assignmentId or not data.courseId or not data.fileUrl:
         raise HTTPException(
             status_code=400, detail="assignmentId, courseId, and fileUrl are required"
@@ -82,9 +85,11 @@ async def get_all_submissions_route(
 # ===============================
 @router.get("/me", response_model=List[AssignmentSubmissionResponse])
 async def get_my_submissions(
-    current_user=Depends(require_role("student")),
-    _=Depends(require_tenant),
+    current_user=Depends(require_role("student"))
 ):
+    # Enforce tenant for non-students
+    if current_user["role"] != "student" and not current_user.get("tenant_id"):
+        raise HTTPException(status_code=403, detail="Tenant context required")
     submissions = await get_submissions_by_student(
         student_id=current_user["user_id"],
         tenant_id=current_user["tenant_id"],

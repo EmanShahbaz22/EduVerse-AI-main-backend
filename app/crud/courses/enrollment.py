@@ -2,6 +2,7 @@ from bson import ObjectId
 from datetime import datetime
 from typing import List
 
+from app.db.database import db
 from app.crud.courses.helpers import get_collections, serialize_course, validate_id
 
 courses_col, students_col, _ = get_collections()
@@ -57,7 +58,7 @@ async def enroll_student(
     student_id: str,
     tenant_id: str | None,
     *,
-    enforce_same_tenant: bool = True,
+    enforce_same_tenant: bool = False,
 ) -> dict:
     for id_val, label in [
         (course_id, "course"),
@@ -102,6 +103,27 @@ async def enroll_student(
         {"_id": course["_id"]},
         {"$inc": {"enrolledStudents": 1}, "$set": {"updatedAt": datetime.utcnow()}},
     )
+
+    # Lazy-init tenant gamification record
+    course_tenant = str(course.get("tenantId"))
+    if course_tenant:
+        perf_exists = await db.student_performance.find_one({
+            "studentId": ObjectId(student_id),
+            "tenantId": ObjectId(course_tenant)
+        })
+        if not perf_exists:
+            user = await db.users.find_one({"_id": student.get("userId")})
+            await db.student_performance.insert_one({
+                "studentId": ObjectId(student_id),
+                "studentName": user.get("fullName", "Student") if user else "Student",
+                "tenantId": ObjectId(course_tenant),
+                "userId": student.get("userId"),
+                "totalPoints": 0, "pointsThisWeek": 0, "xp": 0, "level": 1,
+                "xpToNextLevel": 300, "badges": [], "certificates": [],
+                "weeklyStudyTime": [], "courseStats": [],
+                "createdAt": datetime.utcnow()
+            })
+
     return {"success": True, "message": "Enrolled successfully"}
 
 
@@ -110,7 +132,7 @@ async def unenroll_student(
     student_id: str,
     tenant_id: str | None,
     *,
-    enforce_same_tenant: bool = True,
+    enforce_same_tenant: bool = False,
 ) -> dict:
     for id_val, label in [
         (course_id, "course"),

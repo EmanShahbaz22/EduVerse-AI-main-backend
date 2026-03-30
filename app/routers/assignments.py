@@ -54,9 +54,12 @@ async def get_all_assignments_route(
     order: int = -1,
     page: int = 1,
     limit: int = 10,
-    current_user=Depends(require_role("teacher", "admin", "student")),
-    _=Depends(require_tenant),  # Enforce tenant for listing
+    current_user=Depends(require_role("teacher", "admin", "student"))
 ):
+    # Enforce tenant for non-students
+    if current_user["role"] != "student" and not current_user.get("tenant_id"):
+        raise HTTPException(status_code=403, detail="Tenant context required")
+
     if courseId:
         validate_object_id(courseId, "courseId")
 
@@ -80,9 +83,12 @@ async def get_all_assignments_route(
 @router.get("/{id}", response_model=AssignmentResponse)
 async def get_assignment_route(
     id: str,
-    current_user=Depends(require_role("teacher", "admin", "student")),
-    _=Depends(require_tenant),  # Enforce tenant for fetching single assignment
+    current_user=Depends(require_role("teacher", "admin", "student"))
 ):
+    # Enforce tenant for non-students
+    if current_user["role"] != "student" and not current_user.get("tenant_id"):
+        raise HTTPException(status_code=403, detail="Tenant context required")
+
     validate_object_id(id, "assignmentId")
 
     assignment = await get_assignment(

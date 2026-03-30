@@ -41,11 +41,19 @@ def serialize_submission(sub: dict) -> dict:
 async def create_submission(data, student_id: str, tenant_id: str) -> dict:
     if not data.assignmentId or not data.courseId or not data.fileUrl:
         raise HTTPException(400, "assignmentId, courseId, and fileUrl are required")
+
+    assignment = await db.assignments.find_one({"_id": to_oid(data.assignmentId, "assignmentId")})
+    if not assignment:
+        raise HTTPException(404, "Assignment not found")
+
+    # Use the assignment's tenantId if student has no global tenantId
+    actual_tenant_id = assignment.get("tenantId")
+
     submission = {
         "studentId": to_oid(student_id, "studentId"),
         "assignmentId": to_oid(data.assignmentId, "assignmentId"),
         "courseId": to_oid(data.courseId, "courseId"),
-        "tenantId": to_oid(tenant_id, "tenantId"),
+        "tenantId": actual_tenant_id,
         "fileUrl": data.fileUrl,
         "submittedAt": datetime.utcnow(),
         "obtainedMarks": None,
@@ -67,12 +75,11 @@ async def get_all_submissions(tenant_id: str) -> List[dict]:
 
 
 async def get_submissions_by_student(student_id: str, tenant_id: str) -> List[dict]:
-    cursor = db.assignmentSubmissions.find(
-        {
-            "studentId": to_oid(student_id, "studentId"),
-            "tenantId": to_oid(tenant_id, "tenantId"),
-        }
-    ).sort("submittedAt", -1)
+    query = {"studentId": to_oid(student_id, "studentId")}
+    if tenant_id and ObjectId.is_valid(tenant_id):
+        query["tenantId"] = to_oid(tenant_id, "tenantId")
+
+    cursor = db.assignmentSubmissions.find(query).sort("submittedAt", -1)
     return [serialize_submission(s) async for s in cursor]
 
 
