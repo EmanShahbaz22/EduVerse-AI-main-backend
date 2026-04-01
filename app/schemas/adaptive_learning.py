@@ -3,8 +3,8 @@ from __future__ import annotations
 Pydantic schemas for the Adaptive Learning AI features.
 """
 
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional, Literal, Dict
 
 
 # ──────────────────────────────────────────────
@@ -13,22 +13,70 @@ from typing import List, Optional
 
 class LessonGenerationRequest(BaseModel):
     """What the frontend sends when requesting an AI lesson."""
+
     courseId: str = Field(..., description="The course ID this lesson is for")
-    quizId: str = Field(..., description="The quiz that triggered this lesson")
-    topic: str = Field(..., description="The topic/subject for the lesson")
+    quizId: Optional[str] = Field(None, description="The quiz that triggered this lesson")
+    topic: str = Field(..., min_length=1, max_length=200, description="The topic/subject for the lesson")
+    scorePercentage: Optional[float] = Field(100.0, description="The score on the quiz")
     weakAreas: Optional[str] = Field(
         None,
-        description="Comma-separated weak areas the student struggled with"
+        max_length=500,
+        description="Comma-separated weak areas the student struggled with",
     )
+
+    @field_validator("courseId")
+    @classmethod
+    def must_not_be_empty(cls, v: str, info) -> str:
+        if not v or not v.strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        return v.strip()
+
+    @field_validator("quizId")
+    @classmethod
+    def validate_quiz_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not str(v).strip():
+            return None
+        return str(v).strip()
+
+
+class BaseLessonGenerationRequest(BaseModel):
+    """Request to expand the teacher-authored base lesson with AI."""
+
+    courseId: str = Field(..., description="The course ID this lesson is for")
+    lessonId: str = Field(..., description="The real course lesson ID")
+    topic: str = Field(..., min_length=1, max_length=200, description="The lesson title/topic")
+    sourceContent: str = Field(
+        ...,
+        min_length=1,
+        max_length=20000,
+        description="Teacher-authored lesson description/content to expand",
+    )
+
+    @field_validator("courseId", "lessonId", "topic", "sourceContent")
+    @classmethod
+    def validate_required_strings(cls, v: str, info) -> str:
+        if not v or not str(v).strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        return str(v).strip()
 
 
 class ClassifyStudentRequest(BaseModel):
     """Request to classify a student based on quiz performance."""
+
     courseId: str = Field(..., description="The course ID")
     quizId: str = Field(..., description="The quiz ID")
-    scorePercentage: float = Field(..., ge=0, le=100, description="Quiz score percentage (0-100)")
-    timeSpentSeconds: Optional[float] = Field(None, ge=0, description="Time spent on quiz in seconds")
-    timeLimitSeconds: Optional[float] = Field(None, ge=0, description="Quiz time limit in seconds")
+    scorePercentage: float = Field(
+        ..., ge=0, le=100,
+        description="Quiz score percentage (0-100)",
+    )
+    timeSpentSeconds: Optional[float] = Field(
+        None, ge=0,
+        description="Time spent on quiz in seconds",
+    )
+    timeLimitSeconds: Optional[float] = Field(
+        None, ge=0,
+        description="Quiz time limit in seconds",
+    )
 
 
 # ──────────────────────────────────────────────
@@ -37,10 +85,13 @@ class ClassifyStudentRequest(BaseModel):
 
 class ClassificationResponse(BaseModel):
     """The classification result returned to the frontend."""
-    id: str
-    pace: str = Field(..., description="slow, average, or fast")
+
+    id: Optional[str] = None
+    pace: Literal["slow", "average", "fast"] = Field(
+        ..., description="Student learning pace: slow, average, or fast",
+    )
     score: float
-    factors: List[str]
+    factors: List[str] = []
     courseId: Optional[str] = None
     quizId: Optional[str] = None
     classifiedAt: Optional[str] = None
@@ -48,12 +99,16 @@ class ClassificationResponse(BaseModel):
 
 class GeneratedLessonResponse(BaseModel):
     """A single AI-generated lesson."""
+
     id: str
     title: str
     content: str
+    lessonId: Optional[str] = None
+    sourceTopic: Optional[str] = None
+    generationType: Optional[str] = None
     difficulty: str
     pace: Optional[str] = None
-    estimatedDurationMinutes: int = 10
+    estimatedDurationMinutes: int = Field(default=10, ge=1)
     keyConcepts: List[str] = []
     summary: str = ""
     courseId: Optional[str] = None
@@ -63,8 +118,59 @@ class GeneratedLessonResponse(BaseModel):
 
 class LessonGenerationResponse(BaseModel):
     """The full response after generating a lesson."""
+
     classification: ClassificationResponse
     lesson: GeneratedLessonResponse
     studentId: str
     courseId: str
-    quizId: str
+    quizId: Optional[str] = None
+    isDuplicate: bool = False
+
+
+# ──────────────────────────────────────────────
+# AI Quiz Generation Models
+# ──────────────────────────────────────────────
+
+class QuizQuestion(BaseModel):
+    """A single MCQ question generated by AI."""
+    question: str
+    options: List[str] = Field(..., min_items=4, max_items=4)
+    correctAnswer: str
+    explanation: Optional[str] = None
+
+class AIQuizRequest(BaseModel):
+    """Request to generate a quiz on a specific topic."""
+    courseId: str
+    topic: str = Field(..., min_length=2, max_length=100)
+    difficulty: Literal["beginner", "intermediate", "advanced"] = "intermediate"
+    count: int = Field(default=5, ge=1, le=10)
+
+class AIQuizResponse(BaseModel):
+    """The generated quiz returned to the frontend."""
+    id: Optional[str] = None
+    studentId: Optional[str] = None
+    courseId: str
+    lessonId: Optional[str] = None
+    topic: str
+    questions: List[QuizQuestion]
+    generatedAt: str
+
+
+# ──────────────────────────────────────────────
+# AI Chat Tutor Models
+# ──────────────────────────────────────────────
+
+class AIChatRequest(BaseModel):
+    """A message sent to the AI tutor."""
+    message: str = Field(..., min_length=1, max_length=1000)
+    courseId: str
+    lessonId: Optional[str] = None
+    chapterId: Optional[str] = None
+
+class AIChatResponse(BaseModel):
+    """The AI tutor's response with history."""
+    response: str
+    history: List[Dict[str, str]] = []
+    studentId: str
+    courseId: str
+    metadata: Dict[str, str] = {}

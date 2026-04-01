@@ -6,8 +6,17 @@ from app.utils.mongo import fix_object_ids
 COL = student_performance_collection
 
 
+def safe_oid(val):
+    if not val: return None
+    try:
+        return ObjectId(val) if isinstance(val, str) else val
+    except Exception:
+        return None
+
 def _query(student_id: str, tenant_id: str):
-    return {"studentId": ObjectId(student_id), "tenantId": ObjectId(tenant_id)}
+    s_oid = safe_oid(student_id)
+    t_oid = safe_oid(tenant_id)
+    return {"studentId": s_oid, "tenantId": t_oid}
 
 
 class StudentPerformanceCRUD:
@@ -17,10 +26,10 @@ class StudentPerformanceCRUD:
     ):
         await COL.insert_one(
             {
-                "studentId": ObjectId(student_id),
+                "studentId": safe_oid(student_id),
                 "studentName": student_name,
-                "tenantId": ObjectId(tenant_id),
-                "userId": ObjectId(user_id) if user_id else None,
+                "tenantId": safe_oid(tenant_id),
+                "userId": safe_oid(user_id) if user_id else None,
                 "totalPoints": 0,
                 "pointsThisWeek": 0,
                 "xp": 0,
@@ -160,7 +169,7 @@ class StudentPerformanceCRUD:
                 from fpdf import FPDF
                 from app.db.database import courses_collection
                 
-                course_doc = await courses_collection.find_one({"_id": ObjectId(course_id)})
+                course_doc = await courses_collection.find_one({"_id": safe_oid(course_id)})
                 student_doc = await COL.find_one(q)
                 
                 course_name = course_doc.get("title", "Unknown Course") if course_doc else "Unknown Course"

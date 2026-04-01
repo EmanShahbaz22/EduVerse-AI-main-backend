@@ -2,35 +2,31 @@ from __future__ import annotations
 """
 ai_service.py — The AI Brain Center 🧠
 
-WHY THIS FILE EXISTS:
-    This is like a "translator" between our app and Google's Gemini AI.
-    Instead of calling Gemini directly (which gives messy text), we use
-    LangChain to:
-    1. Send a well-structured PROMPT (like a fill-in-the-blank template)
-    2. Force the AI to return proper JSON (not random text)
-    3. Make it easy to reuse the same setup for lessons, quizzes, chat, etc.
-
-WHAT IT DOES:
-    - Initializes the Gemini LLM (the AI model)
-    - Creates a "lesson generation chain" (prompt → AI → structured JSON)
-    - Other members will import from here to build their own chains
-
-FIX APPLIED (LangChain-Gemini 404 Resolution):
-    Root cause: langchain-google-genai defaults to the v1beta endpoint, which
-    rejects the "-latest" model name suffix after LangChain normalizes it.
-    Three changes were made to resolve this:
-      1. transport="rest"         — bypasses grpcio which has broken C-extensions
-                                    on Python 3.14 / Windows 11.
-      2. client_options           — forces routing to the stable v1 endpoint
-                                    instead of v1beta.
-      3. model="gemini-2.0-flash" — uses a pinned, versioned model name
-                                    that v1 accepts reliably (no "-latest" suffix
-                                    that LangChain strips unpredictably).
+FIXES APPLIED:
+    1. get_llm() is called ONCE outside the retry loop (not on every attempt)
+    2. MAX_RETRIES = 1 — one retry for transient (non-quota) errors only
+    3. 429/RESOURCE_EXHAUSTED → raises RateLimitError immediately (no sleep)
+       The router catches this and returns HTTP 503 with a Retry-After hint
+       instead of hanging the HTTP connection for 60-120 seconds
+    4. Non-quota transient errors: 1 retry after 5s
+    5. JSON fallback parser kept — handles cases where Gemini skips the ```json fence
+    6. transport="rest" kept — avoids grpcio issues on Python 3.14/Windows
+    7. max_retries=0 on LangChain client — prevents silent internal retries
 """
+
+
+class RateLimitError(Exception):
+    """
+    Raised when Gemini returns 429 / RESOURCE_EXHAUSTED.
+    Caught by the router to return HTTP 503 immediately instead of hanging
+    the connection for 60+ seconds with a sleep-and-retry inside the handler.
+    """
 
 import os
 import json
 import logging
+import asyncio
+import re
 from dotenv import load_dotenv
 
 from langchain.prompts import PromptTemplate
@@ -46,36 +42,34 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# FIX: Use a pinned, versioned model name.
-# "gemini-2.0-flash-latest" gets normalized by LangChain into
-# "models/gemini-2.0-flash" which the v1beta endpoint rejects with 404.
-# "gemini-2.0-flash" is stable and accepted by the v1 endpoint.
-GEMINI_MODEL = "gemini-2.0-flash"
+# gemini-2.5-flash: high quota, ultra-fast model.
+GEMINI_MODEL =  "gemini-2.5-flash"
 
-# FIX: Route to the stable v1 API endpoint instead of LangChain's
-# default v1beta endpoint. v1beta inconsistently resolves versioned
-# model names, especially after LangChain's internal name normalization.
-GEMINI_CLIENT_OPTIONS = {
-    "api_endpoint": "https://generativelanguage.googleapis.com"
-}
+# Retry config — tuned for Gemini free tier
+# 429 errors are raised immediately as RateLimitError (no retry) so we don't
+# hang the HTTP connection. The caller (router) returns 503 + Retry-After.
+# Only transient non-quota errors (parse failures, network blips) are retried once.
+MAX_RETRIES = 1          # 1 retry for non-quota errors only (2 total attempts)
+OTHER_ERROR_DELAY = 5   # seconds — short wait for transient errors before 1 retry
 
 
 def get_llm():
     """
     Creates and returns the Gemini LLM instance.
 
-    WHY a function instead of a global variable?
-    - So we can call it fresh each time (avoids stale connections)
-    - Makes testing easier (we can mock this function)
+    FIX: This is now called ONCE per generate_lesson() call and reused
+    across all retry attempts — not recreated on every attempt.
 
-    FIXES APPLIED:
-    - transport="rest": Avoids grpcio C-extension issues on Python 3.14/Windows.
-    - client_options: Forces the v1 (stable) API endpoint.
-    - model name pinned to "gemini-2.0-flash": No suffix stripping by LangChain.
+    Raises ValueError if GEMINI_API_KEY is missing, so the caller
+    can surface a 503 instead of a generic 500.
     """
-    print(f"DEBUG: GEMINI_API_KEY prefix: {GEMINI_API_KEY[:5] if GEMINI_API_KEY else 'NOT SET'}...")
+    # Remove debug print in production — use logger instead so it
+    # respects log level config and doesn't leak keys to stdout
+    logger.debug("Initializing Gemini LLM (model=%s)", GEMINI_MODEL)
+
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
         raise ValueError(
+            
             "GEMINI_API_KEY is not set! "
             "Get a free key from https://aistudio.google.com/apikey "
             "and add it to your .env file."
@@ -85,9 +79,8 @@ def get_llm():
         model=GEMINI_MODEL,
         google_api_key=GEMINI_API_KEY,
         temperature=0.7,
-        transport="rest",                    # FIX 1: avoid grpc on Python 3.14
-        client_options=GEMINI_CLIENT_OPTIONS, # FIX 2: force v1 endpoint
-        convert_system_message_to_human=True,
+        transport="rest",   # avoids grpcio C-extension issues on Python 3.14/Windows
+        max_retries=0,
     )
 
 
@@ -126,6 +119,10 @@ Generate a personalized lesson for a student based on their learning pace and qu
 
 Generate a comprehensive lesson that helps this student improve. Focus especially on their weak areas.
 
+CRITICAL: You must return the lesson in valid, parseable JSON format. 
+DO NOT forget commas between fields. 
+DO NOT include any text outside the JSON block.
+
 {format_instructions}
 """
 
@@ -134,6 +131,49 @@ lesson_prompt = PromptTemplate(
     partial_variables={"format_instructions": lesson_output_parser.get_format_instructions()},
     template=LESSON_PROMPT_TEMPLATE,
 )
+
+
+BASE_LESSON_PROMPT_TEMPLATE = """You are an expert educational content creator.
+Turn the teacher-provided lesson outline into a polished student-facing lesson.
+
+**Lesson Topic:** {topic}
+**Teacher Lesson Description / Notes:**
+{source_content}
+
+**Instructions:**
+- Do not assume any quiz result or student pace yet.
+- Preserve the teacher's intended topic and scope.
+- Expand short notes into a clear, engaging lesson with explanations, examples, and a short recap.
+- If the teacher content is brief, enrich it carefully without changing the topic.
+- Return only valid JSON in the required format.
+
+{format_instructions}
+"""
+
+base_lesson_prompt = PromptTemplate(
+    input_variables=["topic", "source_content"],
+    partial_variables={"format_instructions": lesson_output_parser.get_format_instructions()},
+    template=BASE_LESSON_PROMPT_TEMPLATE,
+)
+
+
+# ── JSON Repair Utility ──
+def repair_json_string(raw: str) -> str:
+    """
+    Attempts to fix common LLM JSON errors, specifically missing commas 
+    between fields (e.g., '"field1": "val" "field2": "val"').
+    """
+    # Remove markdown fences if present
+    raw = re.sub(r'^```json\s*', '', raw.strip())
+    raw = re.sub(r'\s*```$', '', raw)
+    
+    # Fix missing commas between fields:
+    # Look for a closing quote followed by a newline/space and then an opening quote (start of next key)
+    # Using a lookahead to find " followed by optional whitespace and then another "
+    # Pattern: " (whitespace) " -> "," (whitespace) "
+    repaired = re.sub(r'(")\s*(\s*\n\s*)(")', r'\1,\2\3', raw)
+    
+    return repaired
 
 
 # ──────────────────────────────────────────────
@@ -153,49 +193,232 @@ async def generate_lesson(pace: str, topic: str, score: float, weak_areas: str) 
     Returns:
         dict with keys: title, content, difficulty, estimated_duration_minutes,
                         key_concepts, summary
+
+    RETRY LOGIC:
+        - 429/RESOURCE_EXHAUSTED: raises RateLimitError IMMEDIATELY (no sleep).
+          The router catches this and returns HTTP 503 + Retry-After: 60 header.
+          Do NOT retry quota errors inside a web request — it hangs the connection.
+        - Other transient errors (parse failures, network blips): 1 retry after 5s
+        - LLM instance is created ONCE and reused across all attempts
     """
-    try:
-        llm = get_llm()
+    last_exception = None
 
-        # pipe operator: fill prompt → send to Gemini → get response
-        chain = lesson_prompt | llm
+    # FIX: Create LLM once, outside the retry loop.
+    # Old code called get_llm() inside the loop — new connection on every attempt.
+    llm = get_llm()
+    chain = lesson_prompt | llm
 
-        result = await chain.ainvoke({
-            "pace": pace,
-            "topic": topic,
-            "score": str(score),
-            "weak_areas": weak_areas,
-        })
-
-        # result is an AIMessage object — use .content not result["text"]
-        raw_content = result.content
-
-        # Guard: if the model returned an empty response (can happen on
-        # transient API errors), raise early with a clear message.
-        if not raw_content or not raw_content.strip():
-            raise ValueError(
-                "Gemini returned an empty response. "
-                "Check your API quota at https://aistudio.google.com/apikey"
+    for attempt in range(1, MAX_RETRIES + 2):  # attempts: 1, 2, 3
+        try:
+            logger.info(
+                "Calling Gemini API (attempt %d/%d) pace=%s topic=%s score=%s",
+                attempt, MAX_RETRIES + 1, pace, topic, score
             )
 
-        parsed = lesson_output_parser.parse(raw_content)
+            # USE SYNC INVOKE IN A THREAD: ainvoke is currently broken in this 
+            # environment for Gemini + REST transport (TypeError: coroutine cannot be awaited)
+            result = await asyncio.to_thread(chain.invoke, {
+                "pace": pace,
+                "topic": topic,
+                "score": str(score),
+                "weak_areas": weak_areas,
+            })
 
-        # Make sure key_concepts is a list (sometimes AI returns a string)
-        if isinstance(parsed.get("key_concepts"), str):
+            raw_content = result.content
+
+            # Guard: empty response means a silent API-side failure
+            if not raw_content or not raw_content.strip():
+                raise ValueError(
+                    "Gemini returned an empty response. "
+                    "Check your API quota at https://aistudio.google.com/apikey"
+                )
+
+            # ── Parse the AI response ──
+            # Try structured parser first; fall back to raw JSON extraction
+            # if the AI didn't wrap output in ```json fences exactly.
+            parsed = None
             try:
-                parsed["key_concepts"] = json.loads(parsed["key_concepts"])
-            except json.JSONDecodeError:
-                parsed["key_concepts"] = [parsed["key_concepts"]]
+                parsed = lesson_output_parser.parse(raw_content)
+            except Exception as parse_err:
+                logger.warning(
+                    "StructuredOutputParser failed (%s), trying JSON fallback…",
+                    parse_err
+                )
+                json_match = re.search(r'\{[\s\S]*\}', raw_content)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group())
+                    except json.JSONDecodeError:
+                        pass
 
-        # Make sure duration is an integer
+                if parsed is None:
+                    # Trying JSON repair as a last resort
+                    logger.warning("JSON parsing failed, attempting repair…")
+                    repaired_content = repair_json_string(raw_content)
+                    try:
+                        parsed = json.loads(repaired_content)
+                    except json.JSONDecodeError:
+                        # If repair also fails, throw the original parse error
+                        raise ValueError(
+                            f"Could not parse AI response as JSON. "
+                            f"Raw content (first 200 chars): {raw_content[:200]}"
+                        ) from parse_err
+
+            # Ensure key_concepts is always a list
+            if isinstance(parsed.get("key_concepts"), str):
+                try:
+                    parsed["key_concepts"] = json.loads(parsed["key_concepts"])
+                except json.JSONDecodeError:
+                    parsed["key_concepts"] = [parsed["key_concepts"]]
+
+            # Ensure duration is always an integer
+            try:
+                parsed["estimated_duration_minutes"] = int(parsed["estimated_duration_minutes"])
+            except (ValueError, TypeError):
+                parsed["estimated_duration_minutes"] = 10  # safe default
+
+            logger.info("Successfully generated lesson: %s", parsed.get("title", "Untitled"))
+            return parsed
+
+        except Exception as e:
+            last_exception = e
+            err_str = str(e).lower()
+            is_rate_limit = any(
+                kw in err_str for kw in ["429", "resource_exhausted", "rate limit", "quota"]
+            )
+
+            if is_rate_limit:
+                # FAIL FAST on quota errors — do NOT sleep inside the request handler.
+                # Sleeping 60s here hangs the HTTP connection until the client times out.
+                # Instead, raise RateLimitError immediately so the router can return
+                # HTTP 503 with a Retry-After hint and let the client decide when to retry.
+                logger.warning(
+                    "Rate limited by Gemini (attempt %d). Raising RateLimitError — "
+                    "caller should retry after ~60s. Error: %s",
+                    attempt, str(e)
+                )
+                raise RateLimitError(
+                    "Gemini API quota exceeded (429). "
+                    "The free tier resets per minute — please retry in 60 seconds."
+                ) from e
+
+            if attempt >= MAX_RETRIES + 1:
+                # All non-quota attempts exhausted
+                break
+
+            # Non-quota transient error (network blip, parse failure) — retry once
+            logger.warning(
+                "Gemini call failed (attempt %d/%d), retrying in %ds. Error: %s",
+                attempt, MAX_RETRIES + 1, OTHER_ERROR_DELAY, str(e)
+            )
+            await asyncio.sleep(OTHER_ERROR_DELAY)
+
+    logger.error(
+        "All %d Gemini attempts failed. Last error: %s",
+        MAX_RETRIES + 1, str(last_exception)
+    )
+    raise last_exception
+
+
+async def generate_base_lesson(topic: str, source_content: str) -> dict:
+    """
+    Generate the first/base lesson from the teacher's authored lesson notes.
+
+    This path intentionally does NOT classify the student or assume a pace.
+    It simply expands the teacher's source material into a richer lesson.
+    """
+    last_exception = None
+    llm = get_llm()
+    chain = base_lesson_prompt | llm
+
+    for attempt in range(1, MAX_RETRIES + 2):
         try:
-            parsed["estimated_duration_minutes"] = int(parsed["estimated_duration_minutes"])
-        except (ValueError, TypeError):
-            parsed["estimated_duration_minutes"] = 10  # default
+            logger.info(
+                "Calling Gemini API for base lesson (attempt %d/%d) topic=%s",
+                attempt, MAX_RETRIES + 1, topic
+            )
 
-        logger.info("Successfully generated lesson: %s", parsed.get("title", "Untitled"))
-        return parsed
+            result = await asyncio.to_thread(chain.invoke, {
+                "topic": topic,
+                "source_content": source_content,
+            })
 
-    except Exception as e:
-        logger.error("Failed to generate lesson: %s", str(e))
-        raise
+            raw_content = result.content
+            if not raw_content or not raw_content.strip():
+                raise ValueError(
+                    "Gemini returned an empty response. "
+                    "Check your API quota at https://aistudio.google.com/apikey"
+                )
+
+            parsed = None
+            try:
+                parsed = lesson_output_parser.parse(raw_content)
+            except Exception as parse_err:
+                logger.warning(
+                    "StructuredOutputParser failed for base lesson (%s), trying JSON fallback...",
+                    parse_err
+                )
+                json_match = re.search(r'\{[\s\S]*\}', raw_content)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group())
+                    except json.JSONDecodeError:
+                        pass
+
+                if parsed is None:
+                    logger.warning("JSON parsing failed for base lesson, attempting repair...")
+                    repaired_content = repair_json_string(raw_content)
+                    try:
+                        parsed = json.loads(repaired_content)
+                    except json.JSONDecodeError:
+                        raise ValueError(
+                            f"Could not parse AI response as JSON. "
+                            f"Raw content (first 200 chars): {raw_content[:200]}"
+                        ) from parse_err
+
+            if isinstance(parsed.get("key_concepts"), str):
+                try:
+                    parsed["key_concepts"] = json.loads(parsed["key_concepts"])
+                except json.JSONDecodeError:
+                    parsed["key_concepts"] = [parsed["key_concepts"]]
+
+            try:
+                parsed["estimated_duration_minutes"] = int(parsed["estimated_duration_minutes"])
+            except (ValueError, TypeError):
+                parsed["estimated_duration_minutes"] = 10
+
+            logger.info("Successfully generated base lesson: %s", parsed.get("title", "Untitled"))
+            return parsed
+
+        except Exception as e:
+            last_exception = e
+            err_str = str(e).lower()
+            is_rate_limit = any(
+                kw in err_str for kw in ["429", "resource_exhausted", "rate limit", "quota"]
+            )
+
+            if is_rate_limit:
+                logger.warning(
+                    "Rate limited by Gemini during base lesson generation (attempt %d). "
+                    "Raising RateLimitError. Error: %s",
+                    attempt, str(e)
+                )
+                raise RateLimitError(
+                    "Gemini API quota exceeded (429). "
+                    "The free tier resets per minute - please retry in 60 seconds."
+                ) from e
+
+            if attempt >= MAX_RETRIES + 1:
+                break
+
+            logger.warning(
+                "Base lesson generation failed (attempt %d/%d), retrying in %ds. Error: %s",
+                attempt, MAX_RETRIES + 1, OTHER_ERROR_DELAY, str(e)
+            )
+            await asyncio.sleep(OTHER_ERROR_DELAY)
+
+    logger.error(
+        "All %d Gemini attempts for base lesson failed. Last error: %s",
+        MAX_RETRIES + 1, str(last_exception)
+    )
+    raise last_exception

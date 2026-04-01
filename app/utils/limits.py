@@ -29,10 +29,10 @@ async def check_tenant_limits(tenant_id: str | ObjectId, resource_type: Resource
     if not plan:
         plan = {
             "name": "Basic Default API",
-            "maxStudents": 50,
-            "maxTeachers": 5,
-            "maxCourses": 10,
-            "storageGb": 2,
+            "maxStudents": 100,
+            "maxTeachers": 20,
+            "maxCourses": 100,
+            "storageGb": 10,
         }
         
     if resource_type == "students":
