@@ -49,6 +49,7 @@ def serialize_tenant(tenant: dict, metrics: Optional[dict] = None, plan_doc: Opt
         "subscriptionPriceMonthly": plan_price,
         "subscriptionStartDate": tenant.get("subscriptionStartDate"),
         "subscriptionExpiryDate": tenant.get("subscriptionExpiryDate"),
+        "gracePeriodUntil": tenant.get("gracePeriodUntil"),
         "subscriptionNotes": tenant.get("subscriptionNotes"),
         "courses": int(metrics.get("courses", 0)),
         "teachers": int(metrics.get("teachers", 0)),
@@ -57,6 +58,75 @@ def serialize_tenant(tenant: dict, metrics: Optional[dict] = None, plan_doc: Opt
         "updatedAt": tenant.get("updatedAt"),
     }
 
+
+async def is_subscription_active(tenant: dict | ObjectId | str) -> bool:
+    """
+    Checks if the tenant's subscription is active considering:
+    1. Standard Expiry + 48-hour auto-grace (automatic).
+    2. Manual Grace Period (gracePeriodUntil).
+    """
+    from datetime import timedelta
+    
+    if isinstance(tenant, (ObjectId, str)):
+        oid = ObjectId(tenant) if isinstance(tenant, str) else tenant
+        tenant = await db.tenants.find_one({"_id": oid, "isDeleted": False})
+        
+    if not tenant:
+        return False
+        
+    if tenant.get("status") != "active":
+        return False
+        
+    now = datetime.utcnow()
+    expiry = tenant.get("subscriptionExpiryDate")
+    grace = tenant.get("gracePeriodUntil")
+    
+    # 1. Check manual grace (priority)
+    if grace and now < grace:
+        return True
+        
+    # 2. Check standard expiry + 48h auto-grace
+    if expiry:
+        # Standard 48-hour grace period
+        if now < (expiry + timedelta(hours=48)):
+            return True
+            
+    # If no expiry is set at all (e.g. legacy or custom manual), we assume active 
+    # unless logic dictates otherwise. For this system, we'll assume expiry is required for paid/trial.
+    if not expiry:
+        return True
+        
+    return False
+
+async def check_tenant_limit(tenant_id: str | ObjectId, resource_type: str) -> bool:
+    """
+    Checks if a tenant can create more of a resource (students, teachers, courses).
+    Returns True if allowed, raises 403 or 402 if limit reached or expired.
+    Uses centralized utility in app/utils/limits.py
+    """
+    from app.utils.limits import check_tenant_limits
+    # check_tenant_limits expects lowercase plural or specific strings
+    res_map = {"Students": "students", "Teachers": "teachers", "Courses": "courses"}
+    await check_tenant_limits(tenant_id, res_map.get(resource_type, resource_type.lower()))
+    return True
+
+async def check_and_update_tenant_status(tenant_id: str | ObjectId):
+    """
+    Called periodically or on-demand to sync the 'status' field with actual expiry/grace logic.
+    """
+    tenant_oid = ObjectId(tenant_id) if isinstance(tenant_id, str) else tenant_id
+    tenant = await db.tenants.find_one({"_id": tenant_oid, "isDeleted": False})
+    if not tenant:
+        return
+
+    is_active = await is_subscription_active(tenant)
+    new_status = "active" if is_active else "inactive"
+    
+    if tenant.get("status") != new_status:
+        await db.tenants.update_one(
+            {"_id": tenant_oid}, 
+            {"$set": {"status": new_status, "updatedAt": datetime.utcnow()}}
+        )
 
 async def _tenant_metrics(tenant_id: ObjectId) -> dict:
     tenant_courses = [doc["_id"] async for doc in db.courses.find({"tenantId": tenant_id}, {"_id": 1})]

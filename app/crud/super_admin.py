@@ -2,6 +2,8 @@ from bson import ObjectId
 from datetime import datetime
 from app.db.database import db
 from app.crud.users import serialize_user
+from app.utils.security import hash_password, verify_password
+from app.utils.exceptions import not_found, bad_request
 
 
 def serialize_superadmin(user_doc):
@@ -54,59 +56,99 @@ async def get_super_admin_dashboard_stats():
     # 1. Total Tenants
     total_tenants = await db.tenants.count_documents({"isDeleted": False})
     
-    # 2. Active Users (assume users with status='Active' or just total if not filtered)
-    total_users = await db.users.count_documents({"status": "active"})
-    active_users_str = f"{total_users/1000:.1f}K" if total_users >= 1000 else str(total_users)
+    # 2. Active Users = total teachers + total students across all tenants
+    total_teachers = await db.teachers.count_documents({})
+    total_students = await db.students.count_documents({})
+    active_users_count = total_teachers + total_students
+    active_users_str = f"{active_users_count/1000:.1f}K" if active_users_count >= 1000 else str(active_users_count)
     
     # 3. Total Courses
     total_courses = await db.courses.count_documents({})
     
-    # 4. Revenue (subscriptions)
+    # 4. Revenue (try subscriptions first, fallback to tenant subscription prices)
     pipeline_revenue = [
-        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+        {"$group": {"_id": None, "total": {"$sum": "$price_per_month"}}}
     ]
     revenue_cursor = await db.subscriptions.aggregate(pipeline_revenue).to_list(length=1)
-    rev_amount = revenue_cursor[0]["total"] if revenue_cursor else 0
+    rev_amount = revenue_cursor[0]["total"] if revenue_cursor and revenue_cursor[0].get("total") else 0
+    
+    # Fallback: sum subscriptionPriceMonthly from tenants if subscriptions collection has no data
+    if rev_amount == 0:
+        pipeline_tenant_rev = [
+            {"$match": {"isDeleted": False, "subscriptionPriceMonthly": {"$exists": True}}},
+            {"$group": {"_id": None, "total": {"$sum": "$subscriptionPriceMonthly"}}}
+        ]
+        tenant_rev_cursor = await db.tenants.aggregate(pipeline_tenant_rev).to_list(length=1)
+        rev_amount = tenant_rev_cursor[0]["total"] if tenant_rev_cursor and tenant_rev_cursor[0].get("total") else 0
+    
     revenue_str = f"${rev_amount/1000:.1f}K" if rev_amount >= 1000 else f"${rev_amount}"
 
-    # 5. Top Organizations
-    # Top 5 tenants by number of users
-    pipeline_orgs = [
-        {"$match": {"isDeleted": False}},
-        {"$lookup": {"from": "users", "localField": "_id", "foreignField": "tenantId", "as": "users"}},
-        {"$lookup": {"from": "courses", "localField": "_id", "foreignField": "tenantId", "as": "courses"}},
-        {"$project": {
-            "tenantName": 1,
-            "users": {"$size": "$users"},
-            "activeCourses": {"$size": "$courses"}
-        }},
-        {"$sort": {"users": -1}},
-        {"$limit": 5}
-    ]
-    orgs_cursor = await db.tenants.aggregate(pipeline_orgs).to_list(length=5)
-    org_rows = [{"name": org.get("tenantName", "Unknown"), "activeCourses": org.get("activeCourses", 0), "users": org.get("users", 0)} for org in orgs_cursor]
+    # 5. Top Organizations with teachers, students, courses counts
+    # Inline the counting logic (mirrors _tenant_metrics + admin_dashboard.get_all_students)
+    tenants_cursor = db.tenants.find({"isDeleted": False}).sort("createdAt", -1)
+    all_tenants = await tenants_cursor.to_list(length=100)
+    
+    org_rows_raw = []
+    for t in all_tenants:
+        tid = t["_id"]
+        # Get courses for this tenant
+        tenant_course_docs = await db.courses.find({"tenantId": tid}, {"_id": 1}).to_list(length=1000)
+        tenant_course_ids = [doc["_id"] for doc in tenant_course_docs]
+        tenant_course_strs = [str(cid) for cid in tenant_course_ids]
+        
+        # Count teachers (only by tenantId)
+        teacher_count = await db.teachers.count_documents({"tenantId": tid})
+        
+        # Count students: by tenantId OR by enrolledCourses (both string and ObjectId forms)
+        if tenant_course_ids:
+            student_query = {
+                "$or": [
+                    {"tenantId": tid},
+                    {"enrolledCourses": {"$in": tenant_course_strs + tenant_course_ids}}
+                ]
+            }
+        else:
+            student_query = {"tenantId": tid}
+        student_count = await db.students.count_documents(student_query)
+        
+        org_rows_raw.append({
+            "name": t.get("tenantName", "Unknown"),
+            "teachers": teacher_count,
+            "students": student_count,
+            "courses": len(tenant_course_ids)
+        })
+    
+    # Sort by students descending, take top 5
+    org_rows_raw.sort(key=lambda x: x["students"], reverse=True)
+    org_rows = org_rows_raw[:5]
 
-    # Map the top orgs to the Bar Chart data structure (using 'month' key for the x-axis label)
-    growth_data = [{"month": org["name"][:8] + ".." if len(org["name"]) > 8 else org["name"], "tenants": org["users"]} for org in org_rows]
+    # Recalculate active users and courses from actual tenant metrics
+    total_teachers_count = sum(o["teachers"] for o in org_rows_raw)
+    total_students_count = sum(o["students"] for o in org_rows_raw)
+    total_courses_count = sum(o["courses"] for o in org_rows_raw)
+    active_users_count = total_teachers_count + total_students_count
+    active_users_str = f"{active_users_count/1000:.1f}K" if active_users_count >= 1000 else str(active_users_count)
+    total_courses = total_courses_count
+
+    # Map the top orgs to the Bar Chart data structure (using total members for scale)
+    growth_data = [{
+        "month": org["name"][:8] + ".." if len(org["name"]) > 8 else org["name"],
+        "tenants": org["teachers"] + org["students"]
+    } for org in org_rows]
+
+
 
     if not growth_data:
         growth_data = [
             {"month": "Empty", "tenants": 0}
         ]
 
-    # 6. Activity Data
+    # 6. Activity Data (Active / Inactive only)
     active_count = await db.tenants.count_documents({"status": {"$regex": "(?i)^active$"}, "isDeleted": False})
-    pending_count = await db.tenants.count_documents({"status": {"$regex": "(?i)^pending$"}, "isDeleted": False})
-    inactive_count = await db.tenants.count_documents({"status": {"$regex": "(?i)^inactive$"}, "isDeleted": False})
-    
-    # If a tenant has missing/null status, arbitrarily classify as Inactive
-    classified_sum = active_count + pending_count + inactive_count
-    if classified_sum < total_tenants:
-        inactive_count += (total_tenants - classified_sum)
+    inactive_count = total_tenants - active_count
     
     activity_data = [
         {"category": "Active", "value": active_count, "color": "bg-green-500"},
-        {"category": "Pending", "value": pending_count, "color": "bg-yellow-500"},
         {"category": "Inactive", "value": inactive_count, "color": "bg-red-500"}
     ]
 
@@ -121,3 +163,24 @@ async def get_super_admin_dashboard_stats():
         "activityData": activity_data,
         "organizationRows": org_rows
     }
+
+
+async def change_superadmin_password(
+    current_user: dict, new_password: str
+):
+    """Super admin can change password without providing old password."""
+    user = await db.users.find_one(
+        {"_id": ObjectId(current_user["user_id"]), "role": {"$in": ROLE_VALUES}}
+    )
+    if not user:
+        not_found("Super Admin user")
+    if verify_password(new_password, user["password"]):
+        bad_request("New password must differ from current password")
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "password": hash_password(new_password),
+            "updatedAt": datetime.utcnow(),
+        }}
+    )
+    return {"message": "Password updated"}

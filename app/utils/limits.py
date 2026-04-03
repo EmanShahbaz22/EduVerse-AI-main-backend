@@ -19,6 +19,35 @@ async def check_tenant_limits(tenant_id: str | ObjectId, resource_type: Resource
             detail="Tenant not found"
         )
         
+    # --- Expiry & Grace Period Enforcement ---
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    expiry = tenant.get("subscriptionExpiryDate")
+    manual_grace = tenant.get("gracePeriodUntil")
+    status_val = tenant.get("status", "active")
+    
+    if status_val != "active":
+        raise HTTPException(status_code=403, detail="Tenant account is not active.")
+        
+    is_active = False
+    # 1. Check manual grace (priority)
+    if manual_grace and now < manual_grace:
+        is_active = True
+    # 2. Check standard expiry + 48h auto-grace
+    elif expiry:
+        if now < (expiry + timedelta(hours=48)):
+            is_active = True
+    else:
+        # No expiry set -> assume active (legacy/unlimited)
+        is_active = True
+
+    if not is_active:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Subscription expired. Please renew to continue."
+        )
+    # ------------------------------------------
+        
     subscription_id = tenant.get("subscriptionId")
     if not subscription_id:
         plan = None

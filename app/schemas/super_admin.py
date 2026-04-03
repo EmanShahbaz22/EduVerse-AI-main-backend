@@ -35,8 +35,9 @@ class ActivityDataPoint(BaseModel):
 
 class OrganizationRow(BaseModel):
     name: str
-    activeCourses: int
-    users: int
+    teachers: int
+    students: int
+    courses: int
 
 class TenantGrowthPoint(BaseModel):
     month: str

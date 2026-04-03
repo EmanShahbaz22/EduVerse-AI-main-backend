@@ -98,6 +98,25 @@ async def get_tenant_billing_usage(current_user=Depends(get_current_user)):
         }
     }
 
+@router.get("/billing/status")
+async def get_tenant_billing_status(current_user=Depends(get_current_user)):
+    from app.crud.tenants import is_subscription_active
+    tenant_oid = _tenant_oid(current_user)
+    tenant = await db.tenants.find_one({"_id": tenant_oid, "isDeleted": {"$ne": True}})
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+        
+    is_active = await is_subscription_active(tenant)
+    expiry = tenant.get("subscriptionExpiryDate")
+    grace = tenant.get("gracePeriodUntil")
+    
+    return {
+        "isActive": is_active,
+        "expiryDate": expiry,
+        "gracePeriodUntil": grace,
+        "status": tenant.get("status", "active")
+    }
+
 @router.get("/billing/plans")
 async def get_available_billing_plans(current_user=Depends(get_current_user)):
     cursor = db.subscriptionPlans.find({"isDeleted": False, "status": "active"}).sort("pricePerMonth", 1)

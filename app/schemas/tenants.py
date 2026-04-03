@@ -27,6 +27,7 @@ class TenantCreate(BaseModel):
     subscriptionPriceMonthly: Optional[float] = None
     subscriptionStartDate: Optional[datetime] = None
     subscriptionExpiryDate: Optional[datetime] = None
+    gracePeriodUntil: Optional[datetime] = None
     subscriptionNotes: Optional[str] = None
 
     @model_validator(mode="before")
@@ -41,6 +42,7 @@ class TenantCreate(BaseModel):
                 "subscriptionNotes",
                 "contactNumber",
                 "address",
+                "gracePeriodUntil",
             ):
                 if data.get(key) == "":
                     data[key] = None
@@ -63,6 +65,7 @@ class TenantUpdate(BaseModel):
     subscriptionPriceMonthly: Optional[float] = None
     subscriptionStartDate: Optional[datetime] = None
     subscriptionExpiryDate: Optional[datetime] = None
+    gracePeriodUntil: Optional[datetime] = None
     subscriptionNotes: Optional[str] = None
 
     # It is completely optional as the validation is being handled in crud file, but it is a good practice to write validator, so I am keeping this.
@@ -96,6 +99,7 @@ class TenantResponse(BaseModel):
     subscriptionPriceMonthly: Optional[float] = None
     subscriptionStartDate: Optional[datetime] = None
     subscriptionExpiryDate: Optional[datetime] = None
+    gracePeriodUntil: Optional[datetime] = None
     subscriptionNotes: Optional[str] = None
     courses: int = 0
     teachers: int = 0

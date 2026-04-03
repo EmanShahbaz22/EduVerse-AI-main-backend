@@ -48,8 +48,8 @@ if not MONGO_URI:
 # connectTimeoutMS: how long to wait for a single connection to open.
 client = AsyncIOMotorClient(
     MONGO_URI,
-    serverSelectionTimeoutMS=5000,   # fail fast if DB is unreachable (5s)
-    connectTimeoutMS=5000,
+    serverSelectionTimeoutMS=30000,   # fail fast if DB is unreachable (30s)
+    connectTimeoutMS=30000,
 )
 db = client["LMS"]
 
