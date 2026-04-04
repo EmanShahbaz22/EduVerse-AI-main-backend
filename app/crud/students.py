@@ -14,7 +14,7 @@ def merge_user_data(student_doc, user_doc):
     merged = {**student_doc}
     if user_doc:
         for k in (
-            "fullName", "email", "password", "role", "status", "createdAt", "updatedAt", "lastLogin", "profileImageURL", ):
+            "fullName", "email", "password", "role", "status", "createdAt", "updatedAt", "lastLogin", "profileImageURL", "contactNo", "country", ):
             merged[k] = user_doc.get(k, merged.get(k, ""))
         merged.setdefault("role", "student")
         merged.setdefault("status", "active")

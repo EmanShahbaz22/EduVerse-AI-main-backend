@@ -9,6 +9,7 @@ from app.crud.courses.helpers import (
     clean_update_data,
     serialize_course,
 )
+from app.core.course_metadata import ensure_course_category_allowed
 from app.utils.limits import check_tenant_limits
 
 courses_col, students_col, _ = get_collections()
@@ -36,6 +37,8 @@ async def create_course(course_data: CourseCreate) -> dict:
 
     # Enforce Subscription Constraints
     await check_tenant_limits(tenant_id, "courses")
+
+    d["category"] = await ensure_course_category_allowed(d["tenantId"], d.get("category", ""))
 
     d["tenantId"], d["teacherId"] = tenant_id, teacher_id
     d["createdAt"] = d["updatedAt"] = datetime.utcnow()
@@ -70,6 +73,12 @@ async def update_course(course_id: str, tenant_id: str, course_update: CourseUpd
     cleaned = await clean_update_data(course_update.dict(exclude_unset=True))
     if not cleaned:
         return serialize_course({**existing})
+
+    if "category" in cleaned:
+        cleaned["category"] = await ensure_course_category_allowed(
+            tenant_id,
+            cleaned["category"],
+        )
 
     cleaned["updatedAt"] = datetime.utcnow()
     if "tenantId" in cleaned and isinstance(cleaned["tenantId"], str):

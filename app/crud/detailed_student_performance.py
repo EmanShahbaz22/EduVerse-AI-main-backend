@@ -1,39 +1,65 @@
 from bson import ObjectId
+
 from app.db.database import (
-    courses_collection,
-    assignments_collection,
     assignment_submissions_collection,
-    quizzes_collection,
+    assignments_collection,
+    courses_collection,
     quiz_submissions_collection,
+    quizzes_collection,
     students_collection,
-    users_collection
+    users_collection,
 )
-from app.utils.mongo import fix_object_ids
+
+
+def _normalize_id(value) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _format_score_display(score, total: int) -> str:
+    if isinstance(score, (int, float)):
+        return f"{score}/{total}"
+    return str(score)
+
 
 async def get_detailed_student_performance(teacher_id: str, student_id: str, tenant_id: str):
     """
-    Fetches detailed quiz and assignment scores for a specific student, 
-    scoped only to the courses owned by the given teacher.
+    Fetch detailed quiz and assignment scores for a student, limited to courses
+    taught by the requested teacher inside the same tenant.
     """
-    toid = ObjectId(tenant_id)
-    
-    # 1. Fetch valid courses owned by this teacher
+    if not ObjectId.is_valid(tenant_id) or not ObjectId.is_valid(student_id):
+      return []
+
+    tenant_oid = ObjectId(tenant_id)
+    teacher_oid = ObjectId(teacher_id) if ObjectId.is_valid(teacher_id) else None
+
     teacher_query = {
-        "tenantId": toid,
+        "tenantId": tenant_oid,
         "$or": [
             {"teacherId": teacher_id},
-            {"teacherId": ObjectId(teacher_id) if ObjectId.is_valid(teacher_id) else None},
+            {"teacherId": teacher_oid} if teacher_oid else {"teacherId": None},
         ],
     }
+
     courses = await courses_collection.find(teacher_query).to_list(length=None)
-    course_ids = [str(c["_id"]) for c in courses]
-    
-    if not course_ids:
+    if not courses:
         return []
 
-    # 2. Get the student's name
+    course_ids = [str(course["_id"]) for course in courses]
+    course_ids_set = set(course_ids)
+
     student = await students_collection.find_one({"_id": ObjectId(student_id)})
     if not student:
+        return []
+
+    enrolled_courses = {
+        str(course_id)
+        for course_id in student.get("enrolledCourses", [])
+        if _normalize_id(course_id) in course_ids_set
+    }
+
+    if not enrolled_courses:
         return []
 
     student_name = student.get("studentName", "Unknown Student")
@@ -42,77 +68,102 @@ async def get_detailed_student_performance(teacher_id: str, student_id: str, ten
         if user:
             student_name = user.get("fullName", student_name)
 
-    results = []
+    assignments = await assignments_collection.find(
+        {"courseId": {"$in": list(enrolled_courses)}, "tenantId": tenant_oid}
+    ).to_list(length=None)
+    quizzes = await quizzes_collection.find(
+        {"courseId": {"$in": list(enrolled_courses)}, "tenantId": tenant_oid}
+    ).to_list(length=None)
 
-    # 3. For each course, fetch assignments and quizzes
-    for course in courses:
-        cid = str(course["_id"])
-        cname = course.get("title", "Unknown Course")
+    assignment_ids = [str(item["_id"]) for item in assignments]
+    quiz_ids = [str(item["_id"]) for item in quizzes]
 
-        # --- ASSIGNMENTS ---
-        assignments = await assignments_collection.find({"courseId": cid, "tenantId": toid}).to_list(length=None)
-        assignment_map = {str(a["_id"]): a for a in assignments}
-        
-        assignment_subs = await assignment_submissions_collection.find(
-            {"courseId": cid, "studentId": student_id}
-        ).to_list(length=None)
-        
-        assigned_subs_map = {str(s["assignmentId"]): s for s in assignment_subs}
+    assignment_submissions = await assignment_submissions_collection.find(
+        {
+            "studentId": student_id,
+            "courseId": {"$in": list(enrolled_courses)},
+            "assignmentId": {"$in": assignment_ids},
+        }
+    ).to_list(length=None)
+    quiz_submissions = await quiz_submissions_collection.find(
+        {
+            "studentId": student_id,
+            "courseId": {"$in": list(enrolled_courses)},
+            "quizId": {"$in": quiz_ids},
+        }
+    ).to_list(length=None)
 
-        assignments_out = []
-        for aid, a in assignment_map.items():
-            sub = assigned_subs_map.get(aid)
-            score_val = "Pending"
-            if sub and sub.get("obtainedMarks") is not None:
-                score_val = sub.get("obtainedMarks")
-            elif sub:
-                score_val = "Ungraded"
-            
-            assignments_out.append({
-                "id": aid,
-                "title": a.get("title", f"Assignment"),
-                "score": score_val,
-                "total": a.get("totalMarks", 100),
-                "scoreDisplay": f"{score_val}/{a.get('totalMarks', 100)}" if isinstance(score_val, (int, float)) else score_val
-            })
+    assignments_by_course: dict[str, list[dict]] = {}
+    quizzes_by_course: dict[str, list[dict]] = {}
 
-        # --- QUIZZES ---
-        quizzes = await quizzes_collection.find({"courseId": cid, "tenantId": toid}).to_list(length=None)
-        quiz_map = {str(q["_id"]): q for q in quizzes}
+    assignment_submission_map = {
+        str(submission.get("assignmentId")): submission
+        for submission in assignment_submissions
+    }
+    quiz_submission_map = {
+        str(submission.get("quizId")): submission
+        for submission in quiz_submissions
+    }
 
-        quiz_subs = await quiz_submissions_collection.find(
-            {"courseId": cid, "studentId": student_id}
-        ).to_list(length=None)
+    for assignment in assignments:
+        course_id = str(assignment.get("courseId"))
+        assignment_id = str(assignment["_id"])
+        submission = assignment_submission_map.get(assignment_id)
+        score_value = "Pending"
+        if submission and submission.get("obtainedMarks") is not None:
+            score_value = submission.get("obtainedMarks")
+        elif submission:
+            score_value = "Ungraded"
 
-        quiz_subs_map = {str(s["quizId"]): s for s in quiz_subs}
+        total_marks = assignment.get("totalMarks", 100)
+        assignments_by_course.setdefault(course_id, []).append(
+            {
+                "id": assignment_id,
+                "title": assignment.get("title", "Assignment"),
+                "score": score_value,
+                "total": total_marks,
+                "scoreDisplay": _format_score_display(score_value, total_marks),
+            }
+        )
 
-        quizzes_out = []
-        for qid, q in quiz_map.items():
-            sub = quiz_subs_map.get(qid)
-            score_val = "Pending"
-            if sub and sub.get("score") is not None:
-                score_val = sub.get("score")
-            elif sub:
-                score_val = "Ungraded"
+    for quiz in quizzes:
+        course_id = str(quiz.get("courseId"))
+        quiz_id = str(quiz["_id"])
+        submission = quiz_submission_map.get(quiz_id)
+        score_value = "Pending"
+        if submission and submission.get("score") is not None:
+            score_value = submission.get("score")
+        elif submission:
+            score_value = "Ungraded"
 
-            title = q.get("title") or (f"Quiz {q.get('quizNumber')}" if q.get("quizNumber") else "Quiz")
-            
-            quizzes_out.append({
-                "id": qid,
+        total_marks = quiz.get("totalMarks", 100)
+        title = quiz.get("title") or (
+            f"Quiz {quiz.get('quizNumber')}" if quiz.get("quizNumber") else "Quiz"
+        )
+        quizzes_by_course.setdefault(course_id, []).append(
+            {
+                "id": quiz_id,
                 "title": title,
-                "score": score_val,
-                "total": q.get("totalMarks", 100),
-                "scoreDisplay": f"{score_val}/{q.get('totalMarks', 100)}" if isinstance(score_val, (int, float)) else score_val
-            })
+                "score": score_value,
+                "total": total_marks,
+                "scoreDisplay": _format_score_display(score_value, total_marks),
+            }
+        )
 
-        # Only add the course if there are actual assignments or quizzes 
-        # (or always add it if the student is supposedly enrolled, but let's always add it)
-        results.append({
-            "courseId": cid,
-            "courseName": cname,
-            "studentName": student_name,
-            "assignments": assignments_out,
-            "quizzes": quizzes_out
-        })
+    results = []
+    for course in courses:
+        course_id = str(course["_id"])
+        if course_id not in enrolled_courses:
+            continue
+
+        results.append(
+            {
+                "courseId": course_id,
+                "courseName": course.get("title", "Unknown Course"),
+                "studentName": student_name,
+                "assignments": assignments_by_course.get(course_id, []),
+                "quizzes": quizzes_by_course.get(course_id, []),
+            }
+        )
 
     return results

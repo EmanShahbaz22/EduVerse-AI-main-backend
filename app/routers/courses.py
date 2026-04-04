@@ -5,6 +5,8 @@ from app.schemas.courses import (
     CourseCreate,
     CourseUpdate,
     CourseResponse,
+    CourseMetadataResponse,
+    CourseCategorySettingsUpdate,
     CourseEnrollment,
     ReorderLessonsRequest,
     ReorderModulesRequest,
@@ -14,6 +16,10 @@ from app.schemas.courses import (
 from app.crud.courses import course_crud
 from app.auth.dependencies import get_current_user, require_role
 from app.db.database import db
+from app.core.course_metadata import (
+    get_course_metadata,
+    update_tenant_custom_categories,
+)
 
 router = APIRouter(
     prefix="/courses", tags=["courses"], dependencies=[Depends(get_current_user)]
@@ -166,6 +172,33 @@ async def get_courses(
     if not result["success"]:
         raise HTTPException(400, result["message"])
     return result["courses"]
+
+
+@router.get("/metadata", response_model=CourseMetadataResponse)
+async def get_course_metadata_options(current_user=Depends(get_current_user)):
+    return await get_course_metadata(current_user.get("tenant_id"))
+
+
+@router.put(
+    "/metadata/categories",
+    response_model=CourseMetadataResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def update_course_metadata_categories(
+    payload: CourseCategorySettingsUpdate,
+    current_user=Depends(get_current_user),
+):
+    tenant_id = current_user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant context required",
+        )
+
+    try:
+        return await update_tenant_custom_categories(tenant_id, payload.categories)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.get("/{course_id}", response_model=CourseResponse)

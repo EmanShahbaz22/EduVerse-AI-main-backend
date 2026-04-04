@@ -1,7 +1,12 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from datetime import datetime
 from bson import ObjectId
+from app.core.course_metadata import (
+    DEFAULT_COURSE_CATEGORY,
+    DEFAULT_COURSE_LEVEL,
+    validate_course_level,
+)
 
 class PyObjectId(ObjectId):
     @classmethod
@@ -41,8 +46,8 @@ class ModuleSchema(BaseModel):
 class CourseBase(BaseModel):
     title: str = Field(..., min_length=3, max_length=200)
     description: Optional[str] = None
-    category: str
-    level: str = "Beginner"  # Possible values: Beginner, Intermediate, Advanced
+    category: str = DEFAULT_COURSE_CATEGORY
+    level: str = DEFAULT_COURSE_LEVEL
     status: str = "draft"  # Possible values: draft, published
     courseCode: Optional[str] = None
     duration: Optional[str] = None
@@ -57,6 +62,11 @@ class CourseBase(BaseModel):
     hasCertificate: bool = False
     hasBadges: bool = False
     hasLifetimeAccess: bool = False
+
+    @field_validator("level")
+    @classmethod
+    def validate_level(cls, value: str) -> str:
+        return validate_course_level(value)
 
 # Schema for creating a new course (requires IDs for teacher and tenant)
 class CourseCreate(CourseBase):
@@ -86,6 +96,13 @@ class CourseUpdate(BaseModel):
     hasBadges: Optional[bool] = None
     hasLifetimeAccess: Optional[bool] = None
 
+    @field_validator("level")
+    @classmethod
+    def validate_level(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return validate_course_level(value)
+
 # Schema for the full course data as returned in API responses
 class CourseResponse(CourseBase):
     id: str = Field(alias="_id")
@@ -99,6 +116,19 @@ class CourseResponse(CourseBase):
     class Config:
         populate_by_name = True
         json_encoders = {ObjectId: str}
+
+
+class CourseMetadataResponse(BaseModel):
+    categories: List[str]
+    levels: List[str]
+    defaultCategory: str
+    defaultLevel: str
+    systemCategories: List[str] = []
+    customCategories: List[str] = []
+
+
+class CourseCategorySettingsUpdate(BaseModel):
+    categories: List[str] = Field(default_factory=list)
 
 # Schema for enrolling a student into a specific course
 class CourseEnrollment(BaseModel):

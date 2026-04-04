@@ -25,6 +25,7 @@ def serialize_tenant(tenant: dict, metrics: Optional[dict] = None, plan_doc: Opt
     tenant_logo = str(raw_logo).strip() if raw_logo is not None else None
     if not tenant_logo:
         tenant_logo = None
+    tenant_country = tenant.get("address") or tenant.get("country")
         
     # Dynamically resolve plan info if plan_doc is provided
     plan_name = plan_doc.get("name") if plan_doc else tenant.get("subscriptionPlan")
@@ -39,7 +40,7 @@ def serialize_tenant(tenant: dict, metrics: Optional[dict] = None, plan_doc: Opt
         "adminEmail": tenant["adminEmail"],
         "status": tenant.get("status", "active"),
         "contactNumber": tenant.get("contactNumber"),
-        "address": tenant.get("address"),
+        "address": tenant_country,
         "subscriptionId": (
             str(tenant.get("subscriptionId")) if tenant.get("subscriptionId") else None
         ),
@@ -149,6 +150,9 @@ async def _tenant_metrics(tenant_id: ObjectId) -> dict:
 async def create_tenant(request):
     # Convert Pydantic model to dictionary
     data = request.dict()
+    if data.get("country") and not data.get("address"):
+        data["address"] = data["country"]
+    data.pop("country", None)
 
     # duplicate check: any tenant with same name that isn't soft-deleted
     existing = await db.tenants.find_one(
@@ -306,6 +310,10 @@ async def update_tenant(_id: str, updates: dict):
     if "subscriptionId" in safe_updates:
         _ensure_objectid(safe_updates["subscriptionId"], "subscriptionId")
         safe_updates["subscriptionId"] = ObjectId(safe_updates["subscriptionId"])
+
+    if "country" in safe_updates and "address" not in safe_updates:
+        safe_updates["address"] = safe_updates["country"]
+    safe_updates.pop("country", None)
 
     safe_updates["updatedAt"] = datetime.utcnow()
 

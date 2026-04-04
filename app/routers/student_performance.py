@@ -1,5 +1,7 @@
-from fastapi import APIRouter, Depends
+from bson import ObjectId
+from fastapi import APIRouter, Depends, HTTPException, status
 from app.auth.dependencies import get_current_user, require_role
+from app.db.database import db
 from app.crud.student_performance import StudentPerformanceCRUD
 
 router = APIRouter(
@@ -7,6 +9,40 @@ router = APIRouter(
     tags=["Student Performance"],
     dependencies=[Depends(get_current_user)],
 )
+
+
+async def _enforce_teacher_performance_scope(
+    teacher_id: str,
+    tenant_id: str,
+    current_user: dict,
+):
+    if not ObjectId.is_valid(teacher_id):
+        raise HTTPException(status_code=400, detail="Invalid teacher_id")
+
+    if not ObjectId.is_valid(tenant_id):
+        raise HTTPException(status_code=400, detail="Invalid tenantId")
+
+    if current_user["role"] == "super_admin":
+        return
+
+    if current_user.get("tenant_id") != tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: tenant mismatch",
+        )
+
+    teacher = await db.teachers.find_one({"_id": ObjectId(teacher_id)})
+    if not teacher or str(teacher.get("tenantId")) != tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: teacher is outside your tenant",
+        )
+
+    if current_user["role"] == "teacher" and current_user.get("teacher_id") != teacher_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: cannot access another teacher's student data",
+        )
 
 
 # -------------------- GLOBAL LEADERBOARDS --------------------
@@ -33,18 +69,29 @@ async def tenant_top5(tenantId: str):
 
 # -------------------- TEACHER SPECIFIC --------------------
 @router.get("/teacher/{teacher_id}")
-async def get_teacher_student_performances(teacher_id: str, tenantId: str):
+async def get_teacher_student_performances(
+    teacher_id: str,
+    tenantId: str,
+    current_user=Depends(require_role("admin", "teacher", "super_admin")),
+):
     """
     Get all student performances for a specific teacher's courses.
     Requires tenantId as query parameter.
     """
+    await _enforce_teacher_performance_scope(teacher_id, tenantId, current_user)
     return await StudentPerformanceCRUD.get_teacher_performances(teacher_id, tenantId)
 
 @router.get("/teacher/{teacher_id}/student/{student_id}/details")
-async def get_detailed_teacher_student_performance(teacher_id: str, student_id: str, tenantId: str):
+async def get_detailed_teacher_student_performance(
+    teacher_id: str,
+    student_id: str,
+    tenantId: str,
+    current_user=Depends(require_role("admin", "teacher", "super_admin")),
+):
     """
     Get detailed breakdown of a student's quiz and assignment scores for the teacher's courses.
     """
+    await _enforce_teacher_performance_scope(teacher_id, tenantId, current_user)
     from app.crud.detailed_student_performance import get_detailed_student_performance
     return await get_detailed_student_performance(teacher_id, student_id, tenantId)
 

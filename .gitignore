@@ -12,3 +12,4 @@ wheels/
 .venv
 venv/
 .env
+.local-bin/
