@@ -13,7 +13,7 @@ router = APIRouter(prefix="/courses/progress", tags=["Student Progress"])
 @router.get("/{courseId}", response_model=CourseProgressResponse)
 async def get_course_progress(
     courseId: str,
-    tenantId: str = Query(..., alias="tenantId"),
+    tenantId: str | None = Query(None, alias="tenantId"),
     current_user=Depends(require_role("student")),
 ):
     """Fetch progress for a specific course."""
@@ -30,15 +30,15 @@ async def get_course_progress(
 
 @router.post("/mark-complete", response_model=CourseProgressResponse)
 async def mark_lesson_complete(
-    data: MarkLessonCompleteRequest, current_user=Depends(require_role("student"))
+    data: MarkLessonCompleteRequest,
+    tenantId: str | None = Query(None, alias="tenantId"),
+    current_user=Depends(require_role("student")),
 ):
     """Mark a lesson as complete and return updated progress."""
     try:
         student_id = current_user.get("user_id")
-        tenant_id = current_user.get("tenant_id")
-
         result = await progress_crud.mark_lesson_complete(
-            student_id, data.courseId, tenant_id, data.lessonId
+            student_id, data.courseId, tenantId, data.lessonId
         )
         return result
     except ValueError as e:
@@ -49,7 +49,7 @@ async def mark_lesson_complete(
 
 @router.get("/summary/all", response_model=List[CourseProgressResponse])
 async def get_all_progress(
-    tenantId: str = Query(..., alias="tenantId"),
+    tenantId: str | None = Query(None, alias="tenantId"),
     current_user=Depends(require_role("student")),
 ):
     """Get all course progress records for the student."""

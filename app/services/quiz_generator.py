@@ -42,12 +42,68 @@ def normalize_quiz_questions(raw_questions: Any) -> List[Dict[str, Any]]:
     if not isinstance(questions, list):
         return []
 
+    def normalize_options(options: Any, answer: str) -> List[str]:
+        if not isinstance(options, list):
+            return []
+
+        cleaned: List[str] = []
+        seen = set()
+        for option in options:
+            if option is None:
+                continue
+            option_text = str(option).strip()
+            if not option_text or option_text in seen:
+                continue
+            cleaned.append(option_text)
+            seen.add(option_text)
+
+        answer_text = str(answer).strip() if answer is not None else ""
+        if answer_text and answer_text not in seen:
+            cleaned.append(answer_text)
+            seen.add(answer_text)
+
+        if len(cleaned) > 4:
+            if answer_text and answer_text in cleaned:
+                remaining = [item for item in cleaned if item != answer_text][:3]
+                return remaining + [answer_text]
+            return cleaned[:4]
+
+        return cleaned
+
     normalised: List[Dict[str, Any]] = []
     for item in questions:
         if isinstance(item, QuizQuestion):
             normalised.append(item.model_dump())
         elif isinstance(item, dict):
-            normalised.append(item)
+            question_text = str(item.get("question") or "").strip()
+            answer_text = str(
+                item.get("answer")
+                or item.get("correctAnswer")
+                or item.get("correct_answer")
+                or ""
+            ).strip()
+            options = normalize_options(item.get("options", []), answer_text)
+
+            if not question_text or len(options) < 2:
+                continue
+
+            if answer_text and answer_text not in options:
+                options = normalize_options(options + [answer_text], answer_text)
+
+            if not answer_text and options:
+                answer_text = options[0]
+
+            if answer_text not in options:
+                continue
+
+            normalised.append(
+                {
+                    **item,
+                    "question": question_text,
+                    "options": options,
+                    "answer": answer_text,
+                }
+            )
 
     return normalised
 

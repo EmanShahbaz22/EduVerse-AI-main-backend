@@ -5,6 +5,7 @@ import re
 from bson import ObjectId
 from fastapi import HTTPException, status
 
+from app.core.settings import MAX_SUBSCRIPTION_PLANS
 from app.db.database import db
 
 
@@ -84,6 +85,15 @@ async def get_subscription_plan(plan_id: str) -> Optional[dict]:
 
 
 async def create_subscription_plan(data: dict) -> dict:
+    existing_plan_count = await db.subscriptionPlans.count_documents(
+        {"isDeleted": False}
+    )
+    if existing_plan_count >= MAX_SUBSCRIPTION_PLANS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Only {MAX_SUBSCRIPTION_PLANS} subscription plans are allowed.",
+        )
+
     normalized = {
         "code": _normalize_code(data["code"]),
         "name": data["name"].strip(),

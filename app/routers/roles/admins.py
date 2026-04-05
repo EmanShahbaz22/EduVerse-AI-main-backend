@@ -13,11 +13,17 @@ from app.crud.teachers import (
     update_teacher as crud_update_teacher,
 )
 from app.auth.dependencies import get_current_user, require_role
+from app.core.settings import FRONTEND_URL, STRIPE_BRAND_BUTTON_COLOR
 from app.schemas.admins import AdminResponse, AdminUpdateProfile, AdminUpdatePassword
 from app.crud.admins import (
     get_admin_me,
     update_admin_me,
     change_admin_me_password,
+)
+from app.utils.tenant_students import (
+    count_tenant_students,
+    get_tenant_course_refs,
+    student_has_tenant_course_membership,
 )
 
 
@@ -72,13 +78,7 @@ async def get_tenant_billing_usage(current_user=Depends(get_current_user)):
             plan.pop("_id", None)
 
     # To accurately count students, we must match natively created students + students globally enrolled in this tenant's courses.
-    tenant_courses = [c["_id"] async for c in db.courses.find({"tenantId": tenant_id}, {"_id": 1})]
-    students_used = await db.students.count_documents({
-        "$or": [
-            {"tenantId": tenant_id},
-            {"enrolledCourses": {"$in": [str(c) for c in tenant_courses] + tenant_courses}}
-        ]
-    })
+    students_used = await count_tenant_students(tenant_id)
     
     teachers_used = await db.teachers.count_documents({"tenantId": tenant_id})
     courses_used = await db.courses.count_documents({"tenantId": tenant_id})
@@ -135,7 +135,6 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
     import os
     from datetime import timedelta
     stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
     
     tenant_id = _tenant_oid(current_user)
     
@@ -172,6 +171,9 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
         session = stripe.checkout.Session.create(
             ui_mode="embedded",
             payment_method_types=['card'],
+            branding_settings={
+                "button_color": STRIPE_BRAND_BUTTON_COLOR,
+            },
             line_items=[{
                 'price_data': {
                     'currency': 'usd',
@@ -298,8 +300,14 @@ async def update_student(
 ):
     student_oid = _to_oid(student_id, "student_id")
     tenant_oid = _tenant_oid(current_user)
-    student = await db.students.find_one({"_id": student_oid, "tenantId": tenant_oid})
+
+    tenant_course_refs = await get_tenant_course_refs(tenant_oid)
+
+    student = await db.students.find_one({"_id": student_oid})
     if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if not student_has_tenant_course_membership(student, tenant_course_refs):
         raise HTTPException(status_code=404, detail="Student not found")
 
     update_data = {k: v for k, v in data.items() if v is not None}
@@ -319,14 +327,12 @@ async def update_student(
         if user_updates.get("email"):
             user_updates["email"] = user_updates["email"].lower()
         user_updates["updatedAt"] = datetime.utcnow()
-        await db.users.update_one(
-            {"_id": student["userId"], "tenantId": tenant_oid}, {"$set": user_updates}
-        )
+        await db.users.update_one({"_id": student["userId"]}, {"$set": user_updates})
     if student_updates:
         student_updates["updatedAt"] = datetime.utcnow()
         await db.students.update_one({"_id": student_oid}, {"$set": student_updates})
 
-    updated_student = await db.students.find_one({"_id": student_oid, "tenantId": tenant_oid})
+    updated_student = await db.students.find_one({"_id": student_oid})
     updated_user = await db.users.find_one({"_id": updated_student["userId"]})
 
     return {

@@ -3,6 +3,7 @@ from fastapi import HTTPException, status
 from typing import Literal
 
 from app.db.database import db
+from app.utils.tenant_students import count_tenant_students
 
 ResourceType = Literal["students", "teachers", "courses", "storage"]
 
@@ -67,7 +68,7 @@ async def check_tenant_limits(tenant_id: str | ObjectId, resource_type: Resource
     if resource_type == "students":
         limit = plan.get("maxStudents")
         if limit is not None and limit >= 0:
-            current_count = await db.students.count_documents({"tenantId": ObjectId(tenant_id)})
+            current_count = await count_tenant_students(tenant_id)
             if current_count + additional_value > limit:
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,

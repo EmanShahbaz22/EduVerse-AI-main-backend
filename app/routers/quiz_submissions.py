@@ -48,14 +48,12 @@ async def _get_current_student(current_user: dict):
     return student
 
 
-async def _ensure_student_in_tenant(student_id: str, tenant_id: str):
-    student = await db.students.find_one(
-        {"_id": ObjectId(student_id), "tenantId": ObjectId(tenant_id)}
-    )
+async def _ensure_student_exists(student_id: str):
+    student = await db.students.find_one({"_id": ObjectId(student_id)})
     if not student:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: student belongs to a different tenant",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student not found",
         )
 
 
@@ -173,7 +171,7 @@ async def get_student_submissions(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Tenant context required",
             )
-        await _ensure_student_in_tenant(student_id, tenant_id)
+        await _ensure_student_exists(student_id)
     elif role != "super_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -268,7 +266,7 @@ async def student_analytics(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Tenant context required",
             )
-        await _ensure_student_in_tenant(student_id, tenant_id)
+        await _ensure_student_exists(student_id)
     elif role != "super_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

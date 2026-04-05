@@ -43,7 +43,9 @@ class ProgressCRUD:
         else:
             progress["_id"] = str(progress["_id"])
 
-        progress["tenantId"] = str(progress.get("tenantId"))
+        progress["tenantId"] = (
+            str(progress.get("tenantId")) if progress.get("tenantId") else None
+        )
         return progress
 
     async def mark_lesson_complete(
@@ -61,6 +63,7 @@ class ProgressCRUD:
             raise ValueError("Course not found")
 
         actual_tenant_oid = course.get("tenantId")
+        actual_tenant_id = str(actual_tenant_oid) if actual_tenant_oid else tenant_id
 
         # ── 2. Single pass: count lessons, find current title & next topic ────
         # BUG FIX: previously two separate loops — the second loop reset
@@ -92,6 +95,9 @@ class ProgressCRUD:
         already_completed_this_lesson = (
             existing is not None
             and lesson_id in existing.get("completedLessons", [])
+        )
+        was_completed_before = (
+            existing is not None and bool(existing.get("isCompleted"))
         )
 
         # ── 5. Update completed lessons ───────────────────────────────────────
@@ -161,54 +167,48 @@ class ProgressCRUD:
 
             # ── Performance tracking (every lesson, not just 100%) ────────────
             perf = await StudentPerformanceCRUD.get_student_performance(
-                internal_student_id, tenant_id
+                internal_student_id, actual_tenant_id
             )
             if not perf:
                 await StudentPerformanceCRUD.create_performance_record(
                     student_id=internal_student_id,
                     student_name=student_doc.get("fullName", "Student"),
-                    tenant_id=tenant_id,
+                    tenant_id=actual_tenant_id,
                     user_id=student_id
                 )
                 perf = await StudentPerformanceCRUD.get_student_performance(
-                    internal_student_id, tenant_id
+                    internal_student_id, actual_tenant_id
                 )
 
             if perf:
                 await StudentPerformanceCRUD.update_course_progress(
-                    internal_student_id, tenant_id, course_id,
+                    internal_student_id, actual_tenant_id, course_id,
                     percentage, datetime.utcnow().isoformat()
                 )
 
-                if is_completed:
+                just_completed = is_completed and not was_completed_before
+
+                if just_completed:
                     await StudentPerformanceCRUD.add_points(
-                        internal_student_id, tenant_id, 100
+                        internal_student_id,
+                        actual_tenant_id,
+                        100,
+                        reason=f"Course completion: {course.get('title', 'Course')}",
+                        course_id=course_id,
                     )
 
-                    if course.get("hasCertificate"):
-                        already_has_cert = any(
-                            c.get("courseId") == course_id
-                            for c in perf.get("certificates", [])
-                        )
-                        if not already_has_cert:
-                            await StudentPerformanceCRUD.add_certificate(
-                                internal_student_id, tenant_id, {
-                                    "courseId": course_id,
-                                    "courseName": course.get("title"),
-                                    "issuedBy": "EduVerse AI",
-                                    "type": "Course Completion"
-                                }
-                            )
-
                     if course.get("hasBadges"):
+                        refreshed_perf = await StudentPerformanceCRUD.get_student_performance(
+                            internal_student_id, actual_tenant_id
+                        )
                         already_has_badge = any(
                             b.get("courseId") == course_id
                             and b.get("name") == "Course Expert"
-                            for b in perf.get("badges", [])
+                            for b in (refreshed_perf or {}).get("badges", [])
                         )
                         if not already_has_badge:
                             await StudentPerformanceCRUD.add_badge(
-                                internal_student_id, tenant_id, {
+                                internal_student_id, actual_tenant_id, {
                                     "courseId": course_id,
                                     "name": "Course Expert",
                                     "icon": "course_gold.png"
@@ -224,7 +224,7 @@ class ProgressCRUD:
         }
 
     async def get_student_course_progress(
-        self, student_id: str, tenant_id: str
+        self, student_id: str, tenant_id: str | None = None
     ) -> List[dict]:
         """Get progress for all courses a student is enrolled in."""
         query = {"studentId": student_id}

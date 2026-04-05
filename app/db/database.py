@@ -61,8 +61,6 @@ db = client["LMS"]
 student_performance_collection = db["studentPerformance"]
 students_collection            = db["students"]
 courses_collection             = db["courses"]
-assignments_collection         = db["assignments"]
-assignment_submissions_collection = db["assignmentSubmissions"]
 quizzes_collection             = db["quizzes"]
 quiz_submissions_collection    = db["quizSubmissions"]
 users_collection               = db["users"]
@@ -128,24 +126,18 @@ async def ensure_indexes() -> None:
 
     # ── Students ──
     await students_collection.create_index(
-        [("userId", ASCENDING), ("tenantId", ASCENDING)],
-        name="students_user_tenant_idx",
+        [("userId", ASCENDING)],
+        name="students_user_idx",
     )
     await students_collection.create_index(
-        [("tenantId", ASCENDING), ("enrolledCourses", ASCENDING)],
-        name="students_tenant_enrolled_courses_idx",
+        [("enrolledCourses", ASCENDING)],
+        name="students_enrolled_courses_idx",
     )
 
     # ── Courses ──
     await courses_collection.create_index(
         [("tenantId", ASCENDING), ("teacherId", ASCENDING)],
         name="courses_tenant_teacher_idx",
-    )
-
-    # ── Assignments ──
-    await assignments_collection.create_index(
-        [("tenantId", ASCENDING), ("courseId", ASCENDING)],
-        name="assignments_tenant_course_idx",
     )
 
     # ── Quiz submissions ──

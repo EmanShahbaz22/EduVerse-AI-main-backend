@@ -1,6 +1,7 @@
 from bson import ObjectId
 
 from app.db.database import db
+from app.utils.tenant_students import get_tenant_student_query
 
 
 def convert_objectids(doc):
@@ -32,17 +33,7 @@ async def get_all_students(tenant_id: str):
 
     tenant_oid = ObjectId(tenant_id)
 
-    # Find all courses for this tenant first
-    tenant_courses = [str(doc["_id"]) async for doc in db.courses.find({"tenantId": tenant_oid}, {"_id": 1})]
-    tenant_courses_oids = [ObjectId(cid) for cid in tenant_courses]
-    
-    # Match students natively in tenant OR enrolled in a tenant course
-    query = {
-        "$or": [
-            {"tenantId": tenant_oid},
-            {"enrolledCourses": {"$in": tenant_courses + tenant_courses_oids}}
-        ]
-    }
+    query = await get_tenant_student_query(tenant_oid)
 
     async for s in db.students.find(query):
         user_oid = _to_objectid(s.get("userId"))
@@ -61,7 +52,7 @@ async def get_all_students(tenant_id: str):
             "country": user.get("country"),
             "enrolledCourses": s.get("enrolledCourses", []),
             "completedCourses": s.get("completedCourses", []),
-            "tenantId": s.get("tenantId"),
+            "tenantId": None,
             "userId": s.get("userId"),
         }
 

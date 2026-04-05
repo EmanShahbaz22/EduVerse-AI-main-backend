@@ -127,9 +127,11 @@ async def verify_user(email: str, password: str):
     elif role == "admin":
         role_doc = await db.admins.find_one({"userId": user_id})
 
-    # If the role-specific document has a tenantId, it takes precedence
-    if role_doc and role_doc.get("tenantId"):
+    # Students are global accounts; their role doc should not set login tenant context.
+    if role != "student" and role_doc and role_doc.get("tenantId"):
         tenant_id = role_doc.get("tenantId")
+    elif role == "student":
+        tenant_id = None
 
     # Add tenantId and role-specific ID to the user object before serializing
     u["tenantId"] = tenant_id

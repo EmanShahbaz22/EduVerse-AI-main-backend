@@ -6,6 +6,8 @@ from typing import Optional, Any
 from calendar import month_abbr
 import re
 
+from app.utils.tenant_students import count_tenant_students, get_tenant_course_ids
+
 
 def _ensure_objectid(_id: str, name: str = "id"):
     if not ObjectId.is_valid(_id):
@@ -130,17 +132,11 @@ async def check_and_update_tenant_status(tenant_id: str | ObjectId):
         )
 
 async def _tenant_metrics(tenant_id: ObjectId) -> dict:
-    tenant_courses = [doc["_id"] async for doc in db.courses.find({"tenantId": tenant_id}, {"_id": 1})]
-    match_query = {
-        "$or": [
-            {"tenantId": tenant_id},
-            {"enrolledCourses": {"$in": [str(c) for c in tenant_courses] + tenant_courses}}
-        ]
-    }
+    tenant_courses = await get_tenant_course_ids(tenant_id)
     return {
         "courses": len(tenant_courses),
         "teachers": await db.teachers.count_documents({"tenantId": tenant_id}),
-        "students": await db.students.count_documents(match_query),
+        "students": await count_tenant_students(tenant_id),
     }
 
 

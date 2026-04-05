@@ -51,12 +51,8 @@ async def _rollback_user_tree(
 
 
 async def signup_student(payload: dict) -> dict:
-    # Students are global accounts by default; tenant context is optional.
-    tenant_id = _extract_tenant_id(payload, required=False)
-    await _ensure_tenant_exists(tenant_id)
-    
-    if tenant_id:
-        await check_tenant_limits(tenant_id, "students")
+    # Students are global accounts; they do not belong directly to a tenant.
+    tenant_id = None
 
     user_payload = {
         "fullName": payload.get("fullName"),
@@ -68,8 +64,6 @@ async def signup_student(payload: dict) -> dict:
         "contactNo": payload.get("contactNo"),
         "country": payload.get("country"),
     }
-    if tenant_id:
-        user_payload["tenantId"] = tenant_id
 
     try:
         user = await create_user(user_payload)
@@ -86,8 +80,6 @@ async def signup_student(payload: dict) -> dict:
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow(),
         }
-        if tenant_id:
-            student_doc["tenantId"] = ObjectId(tenant_id)
         student_result = await db.students.insert_one(student_doc)
         student_id = student_result.inserted_id
 
@@ -107,8 +99,6 @@ async def signup_student(payload: dict) -> dict:
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow(),
         }
-        if tenant_id:
-            perf_doc["tenantId"] = ObjectId(tenant_id)
 
         await student_performance_collection.insert_one(perf_doc)
     except HTTPException:

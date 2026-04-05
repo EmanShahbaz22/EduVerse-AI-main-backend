@@ -5,6 +5,7 @@ from app.schemas.students import StudentCreate, StudentUpdate
 from app.utils.mongo import fix_object_ids
 from app.utils.security import hash_password, verify_password
 from app.utils.exceptions import not_found, bad_request
+from app.utils.tenant_students import get_tenant_course_refs, get_tenant_student_query, student_has_tenant_course_membership
 from app.db.database import (
     students_collection as COLLECTION, courses_collection, users_collection, db, student_performance_collection,
 )
@@ -12,6 +13,7 @@ def merge_user_data(student_doc, user_doc):
     if not student_doc:
         return None
     merged = {**student_doc}
+    merged["tenantId"] = None
     if user_doc:
         for k in (
             "fullName", "email", "password", "role", "status", "createdAt", "updatedAt", "lastLogin", "profileImageURL", "contactNo", "country", ):
@@ -30,27 +32,19 @@ async def get_student_by_email(email: str):
     student = await COLLECTION.find_one({"userId": user["_id"]})
     return merge_user_data(student, user) if student else None
 async def get_student_by_id(student_id: str, tenantId: str):
-    student = await COLLECTION.find_one(
-        {"_id": ObjectId(student_id)}
-    )
+    student = await COLLECTION.find_one({"_id": ObjectId(student_id)})
     if not student:
         return None
+    if tenantId:
+        tenant_course_refs = await get_tenant_course_refs(tenantId)
+        if not student_has_tenant_course_membership(student, tenant_course_refs):
+            return None
     user = await users_collection.find_one({"_id": student.get("userId")})
     return merge_user_data(student, user)
 async def list_students(tenantId: str = None):
     pipeline = []
     if tenantId:
-        tenant_oid = ObjectId(tenantId) if isinstance(tenantId, str) and ObjectId.is_valid(tenantId) else tenantId
-        tenant_courses = [doc["_id"] async for doc in courses_collection.find({"tenantId": tenant_oid}, {"_id": 1})]
-        
-        # Match students who are either natively part of this tenant OR enrolled in a tenant's course
-        match_query = {
-            "$or": [
-                {"tenantId": tenant_oid},
-                {"enrolledCourses": {"$in": [str(c) for c in tenant_courses] + tenant_courses}}
-            ]
-        }
-        pipeline.append({"$match": match_query})
+        pipeline.append({"$match": await get_tenant_student_query(tenantId)})
     pipeline.extend(
         [
             {"$lookup": {"from": "users", "localField": "userId", "foreignField": "_id", "as": "userDetails", }}, {"$unwind": {"path": "$userDetails", "preserveNullAndEmptyArrays": True}}, ]
@@ -60,7 +54,7 @@ async def list_students(tenantId: str = None):
         ui = doc.pop("userDetails", {}) or {}
         results.append(
             fix_object_ids(
-                {"_id": doc["_id"], "tenantId": doc.get("tenantId"), "fullName": ui.get("fullName", ""), "email": ui.get("email", ""), "role": ui.get("role", "student"), "status": ui.get("status", "active"), "profileImageURL": ui.get("profileImageURL", ""), "contactNo": ui.get("contactNo"), "country": ui.get("country"), "enrolledCourses": doc.get("enrolledCourses", []), "completedCourses": doc.get("completedCourses", []), "createdAt": ui.get("createdAt"), "updatedAt": ui.get("updatedAt"), "lastLogin": ui.get("lastLogin"), }
+                {"_id": doc["_id"], "tenantId": None, "fullName": ui.get("fullName", ""), "email": ui.get("email", ""), "role": ui.get("role", "student"), "status": ui.get("status", "active"), "profileImageURL": ui.get("profileImageURL", ""), "contactNo": ui.get("contactNo"), "country": ui.get("country"), "enrolledCourses": doc.get("enrolledCourses", []), "completedCourses": doc.get("completedCourses", []), "createdAt": ui.get("createdAt"), "updatedAt": ui.get("updatedAt"), "lastLogin": ui.get("lastLogin"), }
             )
         )
     return results
@@ -104,11 +98,7 @@ async def update_student_me(current_user: dict, data: StudentUpdate):
     student = await COLLECTION.find_one({"userId": ObjectId(current_user["user_id"])})
     if not student:
         not_found("Student profile")
-    tenant_id = student.get("tenantId")
-    if tenant_id:
-        return await update_student(str(student["_id"]), str(tenant_id), data)
 
-    # Tenant-independent student profile update path.
     update_data = {
         k: v
         for k, v in data.dict(exclude_unset=True).items()

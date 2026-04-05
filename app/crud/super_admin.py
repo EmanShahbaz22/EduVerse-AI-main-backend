@@ -4,6 +4,7 @@ from app.db.database import db
 from app.crud.users import serialize_user
 from app.utils.security import hash_password, verify_password
 from app.utils.exceptions import not_found, bad_request
+from app.utils.tenant_students import count_tenant_students, get_tenant_course_ids
 
 
 def serialize_superadmin(user_doc):
@@ -91,25 +92,11 @@ async def get_super_admin_dashboard_stats():
     org_rows_raw = []
     for t in all_tenants:
         tid = t["_id"]
-        # Get courses for this tenant
-        tenant_course_docs = await db.courses.find({"tenantId": tid}, {"_id": 1}).to_list(length=1000)
-        tenant_course_ids = [doc["_id"] for doc in tenant_course_docs]
-        tenant_course_strs = [str(cid) for cid in tenant_course_ids]
+        tenant_course_ids = await get_tenant_course_ids(tid)
         
         # Count teachers (only by tenantId)
         teacher_count = await db.teachers.count_documents({"tenantId": tid})
-        
-        # Count students: by tenantId OR by enrolledCourses (both string and ObjectId forms)
-        if tenant_course_ids:
-            student_query = {
-                "$or": [
-                    {"tenantId": tid},
-                    {"enrolledCourses": {"$in": tenant_course_strs + tenant_course_ids}}
-                ]
-            }
-        else:
-            student_query = {"tenantId": tid}
-        student_count = await db.students.count_documents(student_query)
+        student_count = await count_tenant_students(tid)
         
         org_rows_raw.append({
             "name": t.get("tenantName", "Unknown"),
@@ -121,14 +108,6 @@ async def get_super_admin_dashboard_stats():
     # Sort by students descending, take top 5
     org_rows_raw.sort(key=lambda x: x["students"], reverse=True)
     org_rows = org_rows_raw[:5]
-
-    # Recalculate active users and courses from actual tenant metrics
-    total_teachers_count = sum(o["teachers"] for o in org_rows_raw)
-    total_students_count = sum(o["students"] for o in org_rows_raw)
-    total_courses_count = sum(o["courses"] for o in org_rows_raw)
-    active_users_count = total_teachers_count + total_students_count
-    active_users_str = f"{active_users_count/1000:.1f}K" if active_users_count >= 1000 else str(active_users_count)
-    total_courses = total_courses_count
 
     # Map the top orgs to the Bar Chart data structure (using total members for scale)
     growth_data = [{

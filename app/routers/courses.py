@@ -77,13 +77,11 @@ async def _resolve_enrollment_context(enrollment: CourseEnrollment, current_user
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Valid studentId is required",
             )
-        student = await db.students.find_one(
-            {"_id": ObjectId(enrollment.studentId), "tenantId": ObjectId(tenant_id)}
-        )
+        student = await db.students.find_one({"_id": ObjectId(enrollment.studentId)})
         if not student:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Forbidden: student belongs to a different tenant",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Student not found",
             )
         return enrollment.studentId, tenant_id, True
 
@@ -208,8 +206,15 @@ async def get_course(
     current_user=Depends(get_current_user),
 ):
     if current_user["role"] == "student":
+        is_enrolled = False
+        student_id = current_user.get("student_id")
+        if student_id and ObjectId.is_valid(student_id):
+            student = await db.students.find_one({"_id": ObjectId(student_id)})
+            if student:
+                enrolled = {str(cid) for cid in (student.get("enrolledCourses") or [])}
+                is_enrolled = course_id in enrolled
         result = await course_crud.get_course_by_id_any_tenant(
-            course_id, public_only=True
+            course_id, public_only=not is_enrolled
         )
     elif tenantId:
         result = await course_crud.get_course_by_id(course_id, tenantId)

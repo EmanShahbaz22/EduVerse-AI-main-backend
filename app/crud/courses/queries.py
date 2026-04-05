@@ -158,22 +158,16 @@ async def get_marketplace_courses(
         return {"success": False, "message": f"Error: {e}", "courses": [], "total": 0}
 
 
-async def get_student_courses(student_id: str, tenant_id: str) -> dict:
-    err = validate_id(student_id, "student") or validate_id(tenant_id, "tenant")
+async def get_student_courses(student_id: str, tenant_id: Optional[str] = None) -> dict:
+    err = validate_id(student_id, "student")
+    if tenant_id:
+        err = err or validate_id(tenant_id, "tenant")
     if err:
         return {**err, "courses": []}
 
-    student = await students_col.find_one(
-        {"_id": ObjectId(student_id), "tenantId": ObjectId(tenant_id)}
-    )
+    student = await students_col.find_one({"_id": ObjectId(student_id)})
     if not student:
-        exists = await students_col.find_one({"_id": ObjectId(student_id)})
-        msg = (
-            "Student belongs to different tenant"
-            if exists
-            else f"Student not found: {student_id}"
-        )
-        return {"success": False, "message": msg, "courses": []}
+        return {"success": False, "message": f"Student not found: {student_id}", "courses": []}
 
     enrolled = student.get("enrolledCourses", [])
     if not enrolled:
@@ -183,18 +177,28 @@ async def get_student_courses(student_id: str, tenant_id: str) -> dict:
     if not course_ids:
         return {"success": True, "message": "Invalid course enrollments", "courses": []}
 
-    pipeline = get_enriched_courses_pipeline({"_id": {"$in": course_ids}}, 0, 100)
+    course_query: Dict = {"_id": {"$in": course_ids}}
+    if tenant_id:
+        course_query["tenantId"] = ObjectId(tenant_id)
+
+    pipeline = get_enriched_courses_pipeline(course_query, 0, 100)
     courses = await courses_col.aggregate(pipeline).to_list(length=100)
+    if not courses:
+        return {
+            "success": True,
+            "message": "No enrolled courses" if not tenant_id else "No enrolled courses for this tenant",
+            "courses": [],
+        }
 
     # Merge progress data
     progress_user_id = str(student.get("userId") or student_id)
-    progress_cursor = db.student_progress.find(
-        {
-            "studentId": progress_user_id,
-            "courseId": {"$in": [str(c["_id"]) for c in courses]},
-            "tenantId": ObjectId(tenant_id),
-        }
-    )
+    progress_query: Dict = {
+        "studentId": progress_user_id,
+        "courseId": {"$in": [str(c["_id"]) for c in courses]},
+    }
+    if tenant_id:
+        progress_query["tenantId"] = ObjectId(tenant_id)
+    progress_cursor = db.student_progress.find(progress_query)
     progress_map = {p["courseId"]: p for p in await progress_cursor.to_list(length=100)}
 
     enriched = []
@@ -234,68 +238,7 @@ async def get_student_courses(student_id: str, tenant_id: str) -> dict:
 
 
 async def get_student_courses_any_tenant(student_id: str) -> dict:
-    err = validate_id(student_id, "student")
-    if err:
-        return {**err, "courses": []}
-
-    student = await students_col.find_one({"_id": ObjectId(student_id)})
-    if not student:
-        return {"success": False, "message": f"Student not found: {student_id}", "courses": []}
-
-    enrolled = student.get("enrolledCourses", [])
-    if not enrolled:
-        return {"success": True, "message": "No enrolled courses", "courses": []}
-
-    course_ids = [ObjectId(cid) for cid in enrolled if ObjectId.is_valid(cid)]
-    if not course_ids:
-        return {"success": True, "message": "Invalid course enrollments", "courses": []}
-
-    pipeline = get_enriched_courses_pipeline({"_id": {"$in": course_ids}}, 0, 100)
-    courses = await courses_col.aggregate(pipeline).to_list(length=100)
-
-    progress_user_id = str(student.get("userId") or student_id)
-    progress_cursor = db.student_progress.find(
-        {
-            "studentId": progress_user_id,
-            "courseId": {"$in": [str(c["_id"]) for c in courses]},
-        }
-    )
-    progress_map = {p["courseId"]: p for p in await progress_cursor.to_list(length=100)}
-
-    enriched = []
-    for course in courses:
-        cid = str(course["_id"])
-        prog = progress_map.get(cid, {})
-        total_lessons = sum(
-            len((m.get("lessons") or [])) for m in (course.get("modules") or [])
-        )
-        all_lessons = [
-            l for m in (course.get("modules") or []) for l in (m.get("lessons") or [])
-        ]
-        completed = set(str(lid) for lid in prog.get("completedLessons", []))
-
-        next_lesson = "Upcoming Content"
-        if total_lessons > 0:
-            if len(completed) >= total_lessons:
-                next_lesson = "Course Finished! 🎉"
-            else:
-                for lesson in all_lessons:
-                    lid = str(lesson.get("id") or lesson.get("_id") or "")
-                    if lid and lid not in completed:
-                        next_lesson = lesson.get("title", "Next Lesson")
-                        break
-
-        course["progress"] = prog.get("progressPercentage", 0)
-        course["lessonsCompleted"] = len(completed)
-        course["totalLessons"] = total_lessons
-        course["nextLesson"] = next_lesson
-        enriched.append(serialize_course(course))
-
-    return {
-        "success": True,
-        "message": f"Found {len(enriched)} enrolled courses",
-        "courses": enriched,
-    }
+    return await get_student_courses(student_id, None)
 
 
 async def get_enrolled_students(course_id: str, tenant_id: str) -> dict:

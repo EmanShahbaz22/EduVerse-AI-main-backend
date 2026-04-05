@@ -33,8 +33,6 @@ from app.db.database import ping_db, ensure_indexes   # FIX 1: import startup he
 
 from app.routers import (
     adaptive_learning,
-    assignment_submissions,
-    assignments,
     courses,
     payments,
     quiz_submissions,
@@ -198,10 +196,8 @@ app.include_router(teachers.router)
 app.include_router(student_performance.router)
 app.include_router(student_progress.router)
 
-# Courses & Assignments
+# Courses
 app.include_router(courses.router)
-app.include_router(assignments.router)
-app.include_router(assignment_submissions.router)
 
 # Tenants & Quizzes
 app.include_router(tenants.router)

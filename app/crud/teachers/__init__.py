@@ -1,4 +1,4 @@
-"""Teacher CRUD — split into core (CRUD) and related (assignments, quizzes, profile)."""
+"""Teacher CRUD — split into core (CRUD) and related (quizzes, profile)."""
 
 from app.crud.teachers.core import (
     to_oid,
@@ -13,9 +13,6 @@ from app.crud.teachers.core import (
     change_password,
 )
 from app.crud.teachers.related import (
-    serialize_assignment,
-    get_teacher_assignments_route,
-    create_teacher_assignment_route,
     get_teacher_quizzes_route,
     create_teacher_quiz_route,
     get_teacher_dashboard,

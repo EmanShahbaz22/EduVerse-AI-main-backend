@@ -34,11 +34,13 @@ async def login_user(email: str, password: str):
 
     await update_last_login(user["id"])
 
+    token_tenant_id = None if user["role"] == "student" else user["tenantId"]
+
     token = create_access_token(
         {
             "user_id": user["id"],
             "role": user["role"],
-            "tenant_id": user["tenantId"],
+            "tenant_id": token_tenant_id,
             "student_id": user.get("studentId"),
             "teacher_id": user.get("teacherId"),
             "admin_id": user.get("adminId"),

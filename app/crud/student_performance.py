@@ -1,9 +1,26 @@
 from bson import ObjectId
 from datetime import datetime
 from app.db.database import student_performance_collection
+from app.db.database import db
 from app.utils.mongo import fix_object_ids
+import os
+from app.crud.student_performance_support import (
+    build_filtered_certificates,
+    build_global_course_stats,
+    build_global_points_history,
+    build_tenant_course_stats,
+    certificate_download_name,
+    collapse_leaderboard_docs,
+    coerce_datetime,
+    compute_points_this_week,
+    generate_certificate_file,
+    get_certificate_path,
+    history_key,
+    update_level_system,
+)
 
 COL = student_performance_collection
+CERTIFICATE_TEMPLATE_VERSION = "v2"
 
 
 def safe_oid(val):
@@ -20,6 +37,283 @@ def _query(student_id: str, tenant_id: str):
 
 
 class StudentPerformanceCRUD:
+    @staticmethod
+    def _coerce_datetime(value):
+        return coerce_datetime(value)
+
+    @staticmethod
+    def _history_key(item: dict):
+        return history_key(item)
+
+    @staticmethod
+    def _compute_points_this_week(points_history: list[dict]) -> int:
+        return compute_points_this_week(points_history)
+
+    @staticmethod
+    def _get_certificate_path(file_id: str) -> str:
+        return get_certificate_path(file_id)
+
+    @staticmethod
+    def _certificate_download_name(course_name: str) -> str:
+        return certificate_download_name(course_name)
+
+    @staticmethod
+    async def _ensure_performance_record(student_id: str, tenant_id: str):
+        doc = await COL.find_one(_query(student_id, tenant_id))
+        if doc:
+            return doc
+
+        student_query = {"_id": safe_oid(student_id)}
+        tenant_oid = safe_oid(tenant_id)
+        if tenant_oid:
+            student_query["tenantId"] = tenant_oid
+
+        student = await db.students.find_one(student_query)
+        if not student:
+            student = await db.students.find_one({"_id": safe_oid(student_id)})
+        if not student:
+            return None
+
+        user = await db.users.find_one({"_id": student.get("userId")})
+        await StudentPerformanceCRUD.create_performance_record(
+            student_id=student_id,
+            student_name=(user or {}).get("fullName", "Student"),
+            tenant_id=tenant_id,
+            user_id=str(student.get("userId")) if student.get("userId") else None,
+        )
+        return await COL.find_one(_query(student_id, tenant_id))
+
+    @staticmethod
+    async def _generate_certificate_file(student_name: str, course_name: str) -> str:
+        return await generate_certificate_file(student_name, course_name)
+
+    @staticmethod
+    async def _ensure_course_certificate(
+        student_id: str,
+        tenant_id: str,
+        course_id: str,
+        course_name: str,
+        student_name: str,
+    ):
+        q = _query(student_id, tenant_id)
+        perf = await COL.find_one(q, {"certificates": 1})
+        certificates = (perf or {}).get("certificates", [])
+        expected_title = course_name
+        valid_existing = next(
+            (
+                cert
+                for cert in certificates
+                if cert.get("courseId") == course_id
+                and cert.get("file")
+                and cert.get("title")
+                and cert.get("title") == expected_title
+                and cert.get("generatedWith") == CERTIFICATE_TEMPLATE_VERSION
+                and os.path.isfile(StudentPerformanceCRUD._get_certificate_path(cert.get("file")))
+            ),
+            None,
+        )
+        if valid_existing:
+            return
+
+        await COL.update_one(q, {"$pull": {"certificates": {"courseId": course_id}}})
+        file_id = await StudentPerformanceCRUD._generate_certificate_file(
+            student_name, course_name
+        )
+        await COL.update_one(
+            q,
+            {
+                "$push": {
+                    "certificates": {
+                        "courseId": course_id,
+                        "title": expected_title,
+                        "file": file_id,
+                        "date": datetime.utcnow(),
+                        "generatedWith": CERTIFICATE_TEMPLATE_VERSION,
+                    }
+                }
+            },
+        )
+
+    @staticmethod
+    async def sync_from_progress(student_id: str, tenant_id: str):
+        perf = await StudentPerformanceCRUD._ensure_performance_record(
+            student_id, tenant_id
+        )
+        if not perf:
+            return None
+
+        student = await db.students.find_one({"_id": safe_oid(student_id)})
+        if not student:
+            return fix_object_ids(perf)
+
+        progress_query = {"studentId": str(student.get("userId") or student_id)}
+        tenant_oid = safe_oid(tenant_id)
+        if tenant_oid:
+            progress_query["tenantId"] = tenant_oid
+
+        progress_docs = await db.student_progress.find(progress_query).to_list(length=None)
+        raw_perf = await COL.find_one(_query(student_id, tenant_id)) or perf
+
+        course_stats, completed_course_ids = build_tenant_course_stats(progress_docs)
+        course_ids = [
+            safe_oid(progress.get("courseId"))
+            for progress in progress_docs
+            if safe_oid(progress.get("courseId"))
+        ]
+        courses = await db.courses.find({"_id": {"$in": course_ids}}).to_list(length=None) if course_ids else []
+        course_map = {str(course["_id"]): course for course in courses}
+
+        updates = {"$set": {"courseStats": course_stats}}
+        existing_history = raw_perf.get("pointsHistory", [])
+        rewarded_course_ids = {
+            str(item.get("courseId"))
+            for item in existing_history
+            if item.get("courseId")
+        }
+        new_points_entries = []
+
+        for course_id in completed_course_ids:
+            course = course_map.get(course_id)
+            course_name = (course or {}).get("title", "Course")
+
+            if course_id not in rewarded_course_ids:
+                new_points_entries.append(
+                    {
+                        "points": 100,
+                        "reason": f"Course completion: {course_name}",
+                        "courseId": course_id,
+                        "date": datetime.utcnow(),
+                    }
+                )
+
+            if (course or {}).get("hasCertificate"):
+                await StudentPerformanceCRUD._ensure_course_certificate(
+                    student_id=student_id,
+                    tenant_id=tenant_id,
+                    course_id=course_id,
+                    course_name=course_name,
+                    student_name=raw_perf.get("studentName", "Student"),
+                )
+
+        if new_points_entries:
+            total_points = raw_perf.get("totalPoints", 0) + sum(
+                item["points"] for item in new_points_entries
+            )
+            xp = raw_perf.get("xp", 0) + sum(item["points"] for item in new_points_entries)
+            level_data = StudentPerformanceCRUD._update_level_system(
+                {"xp": xp, "level": raw_perf.get("level", 1)}
+            )
+            updates["$set"].update(
+                {
+                    "totalPoints": total_points,
+                    "xp": level_data["xp"],
+                    "level": level_data["level"],
+                    "xpToNextLevel": level_data["xpToNextLevel"],
+                }
+            )
+            updates["$push"] = {"pointsHistory": {"$each": new_points_entries}}
+
+        await COL.update_one(_query(student_id, tenant_id), updates)
+        synced = await COL.find_one(_query(student_id, tenant_id))
+        return fix_object_ids(synced) if synced else None
+
+    @staticmethod
+    async def sync_global_from_progress(student_id: str):
+        perf = await StudentPerformanceCRUD._ensure_performance_record(student_id, None)
+        if not perf:
+            return None
+
+        student = await db.students.find_one({"_id": safe_oid(student_id)})
+        if not student:
+            return fix_object_ids(perf)
+
+        progress_docs = await db.student_progress.find(
+            {"studentId": str(student.get("userId") or student_id)}
+        ).to_list(length=None)
+
+        all_perf_docs = await COL.find({"studentId": safe_oid(student_id)}).to_list(length=None)
+        raw_perf = next((doc for doc in all_perf_docs if not doc.get("tenantId")), None) or perf
+
+        course_ids = {
+            str(progress.get("courseId"))
+            for progress in progress_docs
+            if progress.get("courseId")
+        }
+        courses = (
+            await db.courses.find({"_id": {"$in": [safe_oid(course_id) for course_id in course_ids]}}).to_list(length=None)
+            if course_ids
+            else []
+        )
+        course_map = {str(course["_id"]): course for course in courses}
+
+        course_stats_map, completed_course_ids = build_global_course_stats(progress_docs)
+
+        existing_history = []
+        for doc in all_perf_docs:
+            existing_history.extend(doc.get("pointsHistory", []) or [])
+
+        for course_id in completed_course_ids:
+            course = course_map.get(course_id)
+            course_name = (course or {}).get("title", "Course")
+
+            if (course or {}).get("hasCertificate"):
+                await StudentPerformanceCRUD._ensure_course_certificate(
+                    student_id=student_id,
+                    tenant_id=None,
+                    course_id=course_id,
+                    course_name=course_name,
+                    student_name=raw_perf.get("studentName", "Student"),
+                )
+
+        points_history = build_global_points_history(
+            existing_history,
+            completed_course_ids,
+            course_map,
+        )
+        total_points = sum(int(item.get("points", 0) or 0) for item in points_history)
+        level_data = StudentPerformanceCRUD._update_level_system(
+            {"xp": total_points, "level": 1}
+        )
+
+        course_stats = sorted(
+            course_stats_map.values(),
+            key=lambda item: StudentPerformanceCRUD._coerce_datetime(item.get("lastActive")) or datetime.min,
+            reverse=True,
+        )
+
+        await COL.update_one(
+            _query(student_id, None),
+            {
+                "$set": {
+                    "studentName": raw_perf.get("studentName", "Student"),
+                    "userId": raw_perf.get("userId"),
+                    "courseStats": course_stats,
+                    "pointsHistory": points_history,
+                    "totalPoints": total_points,
+                    "pointsThisWeek": StudentPerformanceCRUD._compute_points_this_week(points_history),
+                    "xp": level_data["xp"],
+                    "level": level_data["level"],
+                    "xpToNextLevel": level_data["xpToNextLevel"],
+                }
+            },
+        )
+
+        global_doc = await COL.find_one(_query(student_id, None)) or raw_perf
+        filtered_certificates = build_filtered_certificates(
+            global_doc.get("certificates", []) or [],
+            completed_course_ids,
+            course_map,
+            CERTIFICATE_TEMPLATE_VERSION,
+        )
+
+        await COL.update_one(
+            _query(student_id, None),
+            {"$set": {"certificates": filtered_certificates}},
+        )
+
+        synced = await COL.find_one(_query(student_id, None))
+        return fix_object_ids(synced) if synced else None
+
     @staticmethod
     async def create_performance_record(
         student_id: str, student_name: str, tenant_id: str, user_id: str = None
@@ -47,32 +341,34 @@ class StudentPerformanceCRUD:
 
     @staticmethod
     def _update_level_system(data: dict):
-        xp, level = data.get("xp", 0), data.get("level", 1)
-        xp_needed = lambda lv: int(round(300 * (1.5 ** (lv - 1)) / 50) * 50)
-        req = xp_needed(level)
-        while xp >= req:
-            xp -= req
-            level += 1
-            req = xp_needed(level)
-        data.update({"xp": xp, "level": level, "xpToNextLevel": req})
-        return data
+        return update_level_system(data)
 
     @staticmethod
-    async def get_student_performance(student_id: str, tenant_id: str):
-        doc = await COL.find_one(_query(student_id, tenant_id))
+    async def get_student_performance(student_id: str, tenant_id: str | None):
+        doc = await StudentPerformanceCRUD.sync_from_progress(student_id, tenant_id)
         if not doc:
             return None
-        doc = fix_object_ids(doc)
         doc["id"] = doc.get("_id")
         return doc
 
     @staticmethod
-    async def add_points(student_id: str, tenant_id: str, points: int, reason: str = "Course Activity"):
+    async def get_global_student_performance(student_id: str):
+        doc = await StudentPerformanceCRUD.sync_global_from_progress(student_id)
+        if not doc:
+            return None
+        doc["id"] = doc.get("_id")
+        return doc
+
+    @staticmethod
+    async def add_points(student_id: str, tenant_id: str, points: int, reason: str = "Course Activity", course_id: str | None = None):
+        history_item = {"points": points, "reason": reason, "date": datetime.utcnow()}
+        if course_id:
+            history_item["courseId"] = course_id
         await COL.update_one(
             _query(student_id, tenant_id),
             {
                 "$inc": {"totalPoints": points, "pointsThisWeek": points, "xp": points},
-                "$push": {"pointsHistory": {"points": points, "reason": reason, "date": datetime.utcnow()}}
+                "$push": {"pointsHistory": history_item}
             },
         )
         updated = await StudentPerformanceCRUD.get_student_performance(
@@ -164,9 +460,6 @@ class StudentPerformanceCRUD:
         if completion == 100:
             exists = await COL.find_one({**q, "certificates.courseId": course_id})
             if not exists:
-                import os
-                import uuid
-                from fpdf import FPDF
                 from app.db.database import courses_collection
                 
                 course_doc = await courses_collection.find_one({"_id": safe_oid(course_id)})
@@ -174,57 +467,13 @@ class StudentPerformanceCRUD:
                 
                 course_name = course_doc.get("title", "Unknown Course") if course_doc else "Unknown Course"
                 student_name = student_doc.get("studentName", "Student") if student_doc else "Student"
-                
-                # Generate Native Python PDF
-                pdf = FPDF(orientation="landscape", format="A4")
-                pdf.add_page()
-                
-                # Frame & styling
-                pdf.set_line_width(5)
-                pdf.set_draw_color(30, 58, 138)
-                pdf.rect(10, 10, 277, 190)
-                
-                # Title Layer
-                pdf.set_font("helvetica", "B", 40)
-                pdf.set_text_color(30, 58, 138)
-                pdf.cell(0, 40, "Certificate of Completion", align="C", new_x="LMARGIN", new_y="NEXT")
-                
-                pdf.set_font("helvetica", "", 20)
-                pdf.set_text_color(55, 65, 81)
-                pdf.cell(0, 20, "This proudly certifies that", align="C", new_x="LMARGIN", new_y="NEXT")
-                
-                # Student Name Layer
-                pdf.set_font("helvetica", "B", 45)
-                pdf.set_text_color(0, 0, 0)
-                pdf.cell(0, 30, student_name, align="C", new_x="LMARGIN", new_y="NEXT")
-                
-                pdf.set_font("helvetica", "", 20)
-                pdf.set_text_color(55, 65, 81)
-                pdf.cell(0, 20, "has successfully completed the course", align="C", new_x="LMARGIN", new_y="NEXT")
-                
-                # Dynamic Course Layer
-                pdf.set_font("helvetica", "B", 30)
-                pdf.set_text_color(30, 58, 138)
-                pdf.cell(0, 30, course_name, align="C", new_x="LMARGIN", new_y="NEXT")
-                
-                pdf.set_font("helvetica", "I", 14)
-                pdf.set_text_color(107, 114, 128)
-                pdf.cell(0, 20, f"Awarded on: {datetime.utcnow().strftime('%B %d, %Y')}", align="C", new_x="LMARGIN", new_y="NEXT")
-                
-                # Directory routing & File Save
-                file_id = f"cert_{uuid.uuid4().hex}.pdf"
-                upload_dir = os.path.join(os.path.dirname(__file__), "..", "..", "uploads", "certificates")
-                os.makedirs(upload_dir, exist_ok=True)
-                pdf.output(os.path.join(upload_dir, file_id))
-                
-                await StudentPerformanceCRUD.add_certificate(
-                    student_id,
-                    tenant_id,
-                    {
-                        "courseId": course_id,
-                        "title": f"Certificate of Completion: {course_name}",
-                        "file": file_id
-                    },
+
+                await StudentPerformanceCRUD._ensure_course_certificate(
+                    student_id=student_id,
+                    tenant_id=tenant_id,
+                    course_id=course_id,
+                    course_name=course_name,
+                    student_name=student_name,
                 )
         return await StudentPerformanceCRUD.get_student_performance(
             student_id, tenant_id
@@ -263,16 +512,7 @@ class StudentPerformanceCRUD:
             ]
         )
         docs = await COL.aggregate(pipeline).to_list(length=None)
-        lb = [
-            {
-                "studentName": (d.get("user", {}) or {}).get("fullName")
-                or d.get("studentName"),
-                "points": d.get("totalPoints", 0),
-            }
-            for d in docs
-        ]
-        lb.sort(key=lambda x: -x["points"])
-        return lb
+        return collapse_leaderboard_docs(docs)
 
     @staticmethod
     async def _ranked(pipeline, limit=None):
@@ -301,6 +541,21 @@ class StudentPerformanceCRUD:
     @staticmethod
     async def global_full():
         return await StudentPerformanceCRUD._ranked([])
+
+    @staticmethod
+    async def global_summary(student_id: str | None = None, limit: int = 10):
+        lb = await StudentPerformanceCRUD._ranked([])
+        current_student = None
+        if student_id:
+            current_student = next(
+                (item for item in lb if item.get("studentId") == student_id),
+                None,
+            )
+        return {
+            "top": lb[:limit],
+            "currentStudent": current_student,
+            "totalStudents": len(lb),
+        }
 
     @staticmethod
     async def get_teacher_performances(teacher_id: str, tenant_id: str):

@@ -4,6 +4,9 @@ from urllib.parse import urlsplit
 
 # Optional default tenant; keep empty by default to avoid hard-coded cross-tenant coupling.
 TENANT_ID = os.getenv("TENANT_ID", "")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200").rstrip("/")
+STRIPE_BRAND_BUTTON_COLOR = os.getenv("STRIPE_BRAND_BUTTON_COLOR", "#23A997")
+MAX_SUBSCRIPTION_PLANS = int(os.getenv("MAX_SUBSCRIPTION_PLANS", "3"))
 
 
 def _normalize_origin(origin: str) -> str | None:

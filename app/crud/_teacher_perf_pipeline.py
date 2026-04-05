@@ -100,41 +100,47 @@ async def run_teacher_perf_pipeline(teacher_id: str, tenant_id: str):
         if not raw_results:
             return []
 
-        # Optimization: Fetch all active quizzes and assignments for these courses
-        from app.db.database import assignments_collection, assignment_submissions_collection, quizzes_collection, quiz_submissions_collection
+        # Optimization: Fetch all assessments for these courses, including AI quiz sessions
+        from app.db.database import (
+            ai_quiz_sessions_collection,
+            quizzes_collection,
+            quiz_submissions_collection,
+        )
         from app.crud.grade_calculator import calculate_grade
         
         # 1. Get all potential points per course
-        assignments = await assignments_collection.find({"courseId": {"$in": course_ids}, "tenantId": toid}).to_list(None)
         quizzes = await quizzes_collection.find({"courseId": {"$in": course_ids}, "tenantId": toid}).to_list(None)
+        ai_quizzes = await ai_quiz_sessions_collection.find({"courseId": {"$in": course_ids}}).to_list(None)
         
         course_totals = {}
-        for a in assignments:
-            cid = str(a["courseId"])
-            course_totals[cid] = course_totals.get(cid, 0) + a.get("totalMarks", 100)
-            
+        ai_totals = {}
         for q in quizzes:
             cid = str(q["courseId"])
             course_totals[cid] = course_totals.get(cid, 0) + q.get("totalMarks", 100)
+
+        for q in ai_quizzes:
+            cid = str(q.get("courseId"))
+            sid = str(q.get("studentId"))
+            if not cid or not sid:
+                continue
+            questions = q.get("questions") or []
+            total_marks = q.get("totalMarks") or len(questions) or 0
+            key = (cid, sid)
+            ai_totals[key] = ai_totals.get(key, 0) + total_marks
             
         # 2. Extract student IDs efficiently
         student_ids = list(set([str(r["studentId"]) for r in raw_results]))
         
         # 3. Fetch submissions
-        a_subs = await assignment_submissions_collection.find({"courseId": {"$in": course_ids}, "studentId": {"$in": student_ids}}).to_list(None)
         q_subs = await quiz_submissions_collection.find({"courseId": {"$in": course_ids}, "studentId": {"$in": student_ids}}).to_list(None)
         
         # map: (courseId, studentId) -> earned_score
         earned_map = {}
-        for sub in a_subs:
-            key = (str(sub["courseId"]), str(sub["studentId"]))
-            val = sub.get("obtainedMarks")
-            if val is not None:
-                earned_map[key] = earned_map.get(key, 0) + val
-            
         for sub in q_subs:
             key = (str(sub["courseId"]), str(sub["studentId"]))
-            val = sub.get("score")
+            val = sub.get("obtainedMarks")
+            if val is None:
+                val = sub.get("percentage")
             if val is not None:
                 earned_map[key] = earned_map.get(key, 0) + val
             
@@ -143,7 +149,7 @@ async def run_teacher_perf_pipeline(teacher_id: str, tenant_id: str):
             c_id = r["courseId"]
             s_id = r["studentId"]
             
-            total_possible = course_totals.get(c_id, 0)
+            total_possible = course_totals.get(c_id, 0) + ai_totals.get((c_id, s_id), 0)
             earned = earned_map.get((c_id, s_id), 0)
             
             r["marks"] = earned
