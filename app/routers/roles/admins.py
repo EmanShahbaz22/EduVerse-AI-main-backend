@@ -13,7 +13,7 @@ from app.crud.teachers import (
     update_teacher as crud_update_teacher,
 )
 from app.auth.dependencies import get_current_user, require_role
-from app.core.settings import FRONTEND_URL, STRIPE_BRAND_BUTTON_COLOR
+from app.core.settings import FRONTEND_URL
 from app.schemas.admins import AdminResponse, AdminUpdateProfile, AdminUpdatePassword
 from app.crud.admins import (
     get_admin_me,
@@ -171,9 +171,6 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
         session = stripe.checkout.Session.create(
             ui_mode="embedded",
             payment_method_types=['card'],
-            branding_settings={
-                "button_color": STRIPE_BRAND_BUTTON_COLOR,
-            },
             line_items=[{
                 'price_data': {
                     'currency': 'usd',
@@ -189,7 +186,7 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
                 'quantity': 1,
             }],
             mode='subscription',
-            return_url=f"{FRONTEND_URL}/admin/settings?billing_success=true",
+            return_url=f"{FRONTEND_URL}/admin/settings?billing_success=true&session_id={{CHECKOUT_SESSION_ID}}",
             metadata={
                 "tenantId": str(tenant_id),
                 "planId": str(plan["_id"]),
@@ -197,6 +194,79 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
             }
         )
         return {"clientSecret": session.client_secret}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+class VerifySessionRequest(BaseModel):
+    session_id: str
+
+@router.post("/billing/verify-session")
+async def verify_billing_session(req: VerifySessionRequest, current_user=Depends(get_current_user)):
+    import stripe
+    import os
+    import asyncio
+    from datetime import timedelta
+
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+    try:
+        session = await asyncio.to_thread(
+            stripe.checkout.Session.retrieve, req.session_id
+        )
+        print(f"[verify-session] session.id={session.id}, status={session.status}")
+
+        if session.status != "complete":
+            return {"success": False, "message": f"Session not completed (status: {session.status})"}
+
+        # Access metadata via attribute (StripeObject)
+        metadata = session.metadata or {}
+        print(f"[verify-session] metadata={dict(metadata) if metadata else 'empty'}")
+
+        session_type = metadata.get("type", None)
+        if session_type != "tenant_upgrade":
+            return {"success": False, "message": f"Not a tenant upgrade session (type: {session_type})"}
+
+        tenant_id_from_meta = metadata.get("tenantId")
+        plan_id = metadata.get("planId")
+        print(f"[verify-session] tenant_id={tenant_id_from_meta}, plan_id={plan_id}")
+
+        if not tenant_id_from_meta or not plan_id:
+            return {"success": False, "message": "Missing tenantId or planId in session metadata"}
+
+        tenant_oid_ctx = _tenant_oid(current_user)
+        print(f"[verify-session] current_user tenant_oid={tenant_oid_ctx}, metadata tenant_id={tenant_id_from_meta}")
+
+        if str(tenant_oid_ctx) != tenant_id_from_meta:
+            return {"success": False, "message": "Tenant mismatch"}
+
+        tenant_oid = ObjectId(tenant_id_from_meta)
+        tenant = await db.tenants.find_one({"_id": tenant_oid})
+        if not tenant:
+            return {"success": False, "message": "Tenant not found"}
+
+        # Apply the upgrade
+        now = datetime.utcnow()
+        plan_doc = await db.subscriptionPlans.find_one({"_id": ObjectId(plan_id)})
+        billing_cycle = plan_doc.get("billingCycle", "monthly") if plan_doc else "monthly"
+        expiry = now + timedelta(days=365) if billing_cycle == "yearly" else now + timedelta(days=30)
+
+        stripe_sub_id = session.subscription  # attribute access
+        print(f"[verify-session] Updating tenant {tenant_id_from_meta} -> plan {plan_id}, stripe_sub={stripe_sub_id}")
+
+        result = await db.tenants.update_one(
+            {"_id": tenant_oid},
+            {"$set": {
+                "subscriptionId": ObjectId(plan_id),
+                "stripeSubscriptionId": stripe_sub_id,
+                "subscriptionStartDate": now,
+                "subscriptionExpiryDate": expiry,
+                "updatedAt": now
+            }}
+        )
+        print(f"[verify-session] Update: matched={result.matched_count}, modified={result.modified_count}")
+
+        return {"success": True, "message": "Subscription upgraded successfully!"}
     except Exception as e:
         import traceback
         traceback.print_exc()

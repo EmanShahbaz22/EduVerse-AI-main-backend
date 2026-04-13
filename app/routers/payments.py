@@ -18,7 +18,7 @@ from app.crud.payments import (
     get_student_payments,
 )
 from app.crud.courses import course_crud
-from app.core.settings import FRONTEND_URL, STRIPE_BRAND_BUTTON_COLOR
+from app.core.settings import FRONTEND_URL
 from app.db.database import db
 from dotenv import load_dotenv
 from typing import List
@@ -130,9 +130,6 @@ async def create_payment_intent(
             stripe.checkout.Session.create,
             ui_mode="embedded",
             payment_method_types=["card"],
-            branding_settings={
-                "button_color": STRIPE_BRAND_BUTTON_COLOR,
-            },
             line_items=[
                 {
                     "price_data": {
@@ -147,7 +144,7 @@ async def create_payment_intent(
                 }
             ],
             mode="payment",
-            return_url=f"{FRONTEND_URL}/student/enroll-course/{data.courseId}?checkout_success=1",
+            return_url=f"{FRONTEND_URL}/student/enroll-course/{data.courseId}?checkout_success=1&session_id={{CHECKOUT_SESSION_ID}}",
             metadata={
                 "courseId": data.courseId,
                 "studentId": student_id,
