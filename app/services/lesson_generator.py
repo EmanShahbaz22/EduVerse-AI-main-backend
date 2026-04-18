@@ -103,16 +103,37 @@ async def generate_lesson_for_student(
 
     existing_lesson = None
     if not force:
+        # Always scope to adaptive lessons — never match the base (Lesson 1) record.
         duplicate_query = {
             "studentId": {"$in": [s_id, student_id]},
             "courseId": {"$in": [c_oid, course_id]} if c_oid else course_id,
+            "generationType": "adaptive",
         }
         if lesson_id:
+            # If we know the exact lesson slot, match it precisely.
             duplicate_query["lessonId"] = lesson_id
         elif quiz_id:
+            # If triggered by a quiz submission, match that quiz's generated lesson.
             duplicate_query["quizId"] = {"$in": [q_oid, quiz_id]} if q_oid else quiz_id
+        else:
+            # No quiz or lesson anchor — fall back to topic match so we don't
+            # accidentally collide with a different lesson on the same course.
+            duplicate_query["sourceTopic"] = topic
 
         existing_lesson = await db.aiGeneratedLessons.find_one(duplicate_query)
+
+    if existing_lesson:
+        # FIX: If the existing lesson has no content, it's a previous failed/incomplete
+        # generation. Delete the orphan record and fall through to regenerate.
+        has_content = bool((existing_lesson.get("content") or "").strip())
+        if not has_content:
+            logger.warning(
+                "Found orphan lesson (no content) for student=%s quiz=%s — "
+                "previous generation likely failed. Deleting and regenerating.",
+                student_id, quiz_id,
+            )
+            await db.aiGeneratedLessons.delete_one({"_id": existing_lesson["_id"]})
+            existing_lesson = None
 
     if existing_lesson:
         logger.info(

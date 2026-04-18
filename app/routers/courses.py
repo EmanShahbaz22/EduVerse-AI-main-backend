@@ -199,6 +199,22 @@ async def update_course_metadata_categories(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
+@router.get("/recommendations/{student_id}", response_model=List[CourseResponse])
+async def get_recommended_courses(
+    student_id: str,
+    limit: int = Query(10, ge=1, le=50),
+    current_user=Depends(require_role("student")),
+):
+    if current_user.get("student_id") != student_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: cannot access another student's recommendations",
+        )
+    from app.services.recommendation import get_recommended_courses as _recommend
+    courses = await _recommend(student_id, limit)
+    return courses
+
+
 @router.get("/{course_id}", response_model=CourseResponse)
 async def get_course(
     course_id: str,
@@ -325,20 +341,7 @@ async def unenroll_student_from_course(
     return result
 
 
-@router.get("/recommendations/{student_id}", response_model=List[CourseResponse])
-async def get_recommended_courses(
-    student_id: str,
-    limit: int = Query(10, ge=1, le=50),
-    current_user=Depends(require_role("student")),
-):
-    if current_user.get("student_id") != student_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: cannot access another student's recommendations",
-        )
-    from app.services.recommendation import get_recommended_courses as _recommend
-    courses = await _recommend(student_id, limit)
-    return courses
+
 
 
 @router.get("/student/{student_id}", response_model=List[CourseWithProgress])
