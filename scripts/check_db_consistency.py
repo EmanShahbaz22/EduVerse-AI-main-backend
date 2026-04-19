@@ -49,14 +49,14 @@ async def main():
             continue
         if user.get("role") != "student":
             issues["students_role_mismatch"].append(str(s["_id"]))
-        student_tid = s.get("tenantId")
-        user_tid = user.get("tenantId")
-        if student_tid and user_tid and student_tid != user_tid:
-            issues["students_user_tenant_mismatch"].append(str(s["_id"]))
+        if s.get("tenantId") not in (None, ""):
+            issues["students_legacy_tenant_binding"].append(str(s["_id"]))
 
     for uid, user in users.items():
         if user.get("role") == "student" and uid not in students_by_user:
             issues["users_missing_student_profile"].append(str(uid))
+        if user.get("role") == "student" and user.get("tenantId") not in (None, ""):
+            issues["users_legacy_student_tenant_binding"].append(str(uid))
 
     for t in teachers:
         uid = t.get("userId")
@@ -96,9 +96,6 @@ async def main():
         if not student:
             issues["quiz_sub_missing_student"].append(str(sub["_id"]))
             continue
-        student_tid = student.get("tenantId")
-        if student_tid and tid and tid != student_tid:
-            issues["quiz_sub_tenant_student_mismatch"].append(str(sub["_id"]))
 
         quiz = quizzes.get(qid)
         if not quiz:

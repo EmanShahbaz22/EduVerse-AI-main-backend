@@ -334,14 +334,6 @@ async def teacher_dashboard_route(
 # ------------------ Placeholder Integration ------------------
 
 
-@router.get("/{id}/assignments")
-async def teacher_assignments(
-    id: str, current_user=Depends(require_role("admin", "teacher", "super_admin"))
-):
-    await _enforce_teacher_scope(id, current_user)
-    return {"message": f"Fetch assignments for teacher {id}"}
-
-
 @router.get("/{id}/courses")
 async def teacher_courses(
     id: str, current_user=Depends(require_role("admin", "teacher", "super_admin"))

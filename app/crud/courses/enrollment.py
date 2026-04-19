@@ -3,8 +3,21 @@ from datetime import datetime
 from typing import List
 
 from app.crud.courses.helpers import get_collections, serialize_course, validate_id
+from app.crud.courses.enrollment_support import (
+    ensure_student_tenant_performance,
+    is_completed_course_attempt,
+    reset_completed_course_attempt,
+)
 
 courses_col, students_col, _ = get_collections()
+
+
+async def _is_completed_course_attempt(student: dict, course_id: str) -> bool:
+    return await is_completed_course_attempt(student, course_id)
+
+
+async def _reset_completed_course_attempt(student: dict, course_id: str) -> None:
+    await reset_completed_course_attempt(students_col, student, course_id)
 
 
 async def _verify_tenant_entity(collection, entity_id: str, tenant_id: str, label: str):
@@ -39,13 +52,6 @@ async def _get_course_for_enrollment(
 async def _get_student_for_enrollment(
     student_id: str, tenant_id: str | None, enforce_same_tenant: bool
 ):
-    if enforce_same_tenant:
-        if not tenant_id:
-            return None, {"success": False, "message": "Tenant context required"}
-        return await _verify_tenant_entity(
-            students_col, student_id, tenant_id, "Student"
-        )
-
     student = await students_col.find_one({"_id": ObjectId(student_id)})
     if not student:
         return None, {"success": False, "message": f"Student not found: {student_id}"}
@@ -57,7 +63,7 @@ async def enroll_student(
     student_id: str,
     tenant_id: str | None,
     *,
-    enforce_same_tenant: bool = True,
+    enforce_same_tenant: bool = False,
 ) -> dict:
     for id_val, label in [
         (course_id, "course"),
@@ -85,14 +91,17 @@ async def enroll_student(
         return err
 
     if course_id in student.get("enrolledCourses", []):
+        if await _is_completed_course_attempt(student, course_id):
+            await _reset_completed_course_attempt(student, course_id)
+            return {
+                "success": True,
+                "message": "Re-enrolled successfully",
+                "reenrolled": True,
+            }
         return {"success": False, "message": "Already enrolled"}
 
-    student_filter = {"_id": ObjectId(student_id)}
-    if enforce_same_tenant and tenant_id:
-        student_filter["tenantId"] = ObjectId(tenant_id)
-
     await students_col.update_one(
-        student_filter,
+        {"_id": ObjectId(student_id)},
         {
             "$addToSet": {"enrolledCourses": course_id},
             "$set": {"updatedAt": datetime.utcnow()},
@@ -102,6 +111,9 @@ async def enroll_student(
         {"_id": course["_id"]},
         {"$inc": {"enrolledStudents": 1}, "$set": {"updatedAt": datetime.utcnow()}},
     )
+
+    await ensure_student_tenant_performance(course, student)
+
     return {"success": True, "message": "Enrolled successfully"}
 
 
@@ -110,7 +122,7 @@ async def unenroll_student(
     student_id: str,
     tenant_id: str | None,
     *,
-    enforce_same_tenant: bool = True,
+    enforce_same_tenant: bool = False,
 ) -> dict:
     for id_val, label in [
         (course_id, "course"),
@@ -140,12 +152,8 @@ async def unenroll_student(
     if course_id not in student.get("enrolledCourses", []):
         return {"success": False, "message": "Not enrolled in this course"}
 
-    student_filter = {"_id": ObjectId(student_id)}
-    if enforce_same_tenant and tenant_id:
-        student_filter["tenantId"] = ObjectId(tenant_id)
-
     await students_col.update_one(
-        student_filter,
+        {"_id": ObjectId(student_id)},
         {
             "$pull": {"enrolledCourses": course_id},
             "$set": {"updatedAt": datetime.utcnow()},

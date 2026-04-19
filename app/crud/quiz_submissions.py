@@ -2,6 +2,7 @@ from bson import ObjectId
 from datetime import datetime
 from app.db.database import db
 from typing import Optional, Tuple
+from app.services.quiz_generator import normalize_quiz_questions
 
 
 def serialize_submission(s: dict) -> dict:
@@ -22,7 +23,7 @@ def serialize_submission(s: dict) -> dict:
 def _grade_submission(
     quiz_doc: dict, submission_doc: dict
 ) -> Tuple[float, float, list]:
-    questions = quiz_doc.get("questions", [])
+    questions = normalize_quiz_questions(quiz_doc.get("questions", []))
     total_marks = quiz_doc.get("totalMarks", len(questions)) or len(questions)
 
     has_explicit = any(
@@ -40,7 +41,10 @@ def _grade_submission(
     obtained, details = 0.0, []
 
     for idx, q in enumerate(questions):
-        correct = q.get("answer") if isinstance(q, dict) else None
+        correct = None
+        if isinstance(q, dict):
+            # Support both legacy quizzes (answer) and AI sessions (correctAnswer)
+            correct = q.get("answer") or q.get("correctAnswer")
         selected = answer_map.get(idx)
         q_marks = marks_per_q[idx] if idx < len(marks_per_q) else 0.0
         is_correct = selected is not None and selected == correct
@@ -61,12 +65,27 @@ def _grade_submission(
 
 async def submit_and_grade_submission(payload, *, student_id: str, tenant_id: str):
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    raw_answers = data.pop("answers", [])
+    normalised_answers = []
+    for idx, ans in enumerate(raw_answers):
+        if isinstance(ans, dict):
+            qi = ans.get("questionIndex", idx)
+            sel = ans.get("selected") or ans.get("answer")
+        else:
+            qi = idx
+            sel = ans
+        normalised_answers.append(
+            {"questionIndex": int(qi), "selected": str(sel) if sel is not None else None}
+        )
+    data["answers"] = normalised_answers
+
+    tenant_oid = ObjectId(tenant_id) if tenant_id and ObjectId.is_valid(str(tenant_id)) else None
     data.update(
         {
             "studentId": ObjectId(student_id),
             "quizId": ObjectId(data["quizId"]),
             "courseId": ObjectId(data["courseId"]),
-            "tenantId": ObjectId(tenant_id),
+            "tenantId": tenant_oid,
             "submittedAt": datetime.utcnow(),
             "status": "pending",
         }
@@ -82,8 +101,24 @@ async def submit_and_grade_submission(payload, *, student_id: str, tenant_id: st
         return "AlreadySubmitted"
 
     quiz = await db.quizzes.find_one({"_id": data["quizId"], "tenantId": data["tenantId"]})
+    from app.db.database import ai_quiz_sessions_collection
+    is_ai_quiz = False
+    
     if not quiz:
-        return None
+        # Fallback to AI Quiz Sessions
+        quiz = await ai_quiz_sessions_collection.find_one({"_id": data["quizId"]})
+        if quiz:
+            is_ai_quiz = True
+            # For AI quizzes, we might need to verify student ownership
+            if str(quiz.get("studentId")) != student_id:
+                return None
+            # If tenant is missing, derive from course to keep submissions scoped
+            if not data.get("tenantId"):
+                course = await db.courses.find_one({"_id": data["courseId"]})
+                if course and course.get("tenantId"):
+                    data["tenantId"] = course.get("tenantId")
+        else:
+            return None
 
     res = await db.quizSubmissions.insert_one(data)
     submission_doc = await db.quizSubmissions.find_one({"_id": res.inserted_id})
@@ -103,6 +138,50 @@ async def submit_and_grade_submission(payload, *, student_id: str, tenant_id: st
             }
         },
     )
+
+    # --- TRIGGER ADAPTIVE PIPELINE ---
+    if is_ai_quiz or True: # Trigger for all to ensure continuity
+        import asyncio
+        from app.services.lesson_generator import generate_lesson_for_student
+        
+        async def trigger_next_lesson():
+            try:
+                # Find the next topic in the course sequence
+                course = await db.courses.find_one({"_id": data["courseId"]})
+                next_topic = None
+                next_lesson_id = None
+                if course:
+                    found_curr = False
+                    current_lesson_id = quiz.get("lessonId")
+                    quiz_topic = quiz.get("topic")
+                    for m in course.get("modules", []):
+                        for l in m.get("lessons", []):
+                            if found_curr and l.get("type") != "quiz":
+                                next_topic = l.get("title")
+                                next_lesson_id = str(l.get("id")) if l.get("id") else None
+                                break
+                            if current_lesson_id and str(l.get("id")) == str(current_lesson_id):
+                                found_curr = True
+                            elif not current_lesson_id and l.get("title") == quiz_topic:
+                                found_curr = True
+                        if next_topic: break
+                
+                if next_topic:
+                    await generate_lesson_for_student(
+                        student_id=student_id,
+                        course_id=str(data["courseId"]),
+                        topic=next_topic,
+                        quiz_id=str(data["quizId"]),
+                        lesson_id=next_lesson_id,
+                        score_percentage=pct,
+                        tenant_id=str(data["tenantId"]) if data.get("tenantId") else tenant_id
+                    )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Quiz Trigger Error: {e}")
+
+        asyncio.create_task(trigger_next_lesson())
+
     return serialize_submission(
         await db.quizSubmissions.find_one({"_id": res.inserted_id})
     )

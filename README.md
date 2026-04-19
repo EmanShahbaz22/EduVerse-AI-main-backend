@@ -1,76 +1,139 @@
-# EduVerse AI Backend
+# EduVerse Backend
+
+FastAPI backend for the EduVerse multi-tenant e-learning platform.
+
+## Stack
+
+- FastAPI
+- MongoDB
+- Motor
+- Stripe
+- Pydantic
+- `uv` for environment and dependency management
+
+## Current Business Model
+
+- Admins and teachers remain tenant-bound.
+- Students are global users.
+- A student can enroll in courses across tenants.
+- Tenant context for student actions is derived from the target resource, such as course, payment, progress, or submission, instead of direct student ownership by a tenant.
 
 ## Setup
-1. Install `uv`:
+
+Install `uv` if needed:
 
 ```bash
 pip install uv
 ```
 
-2. Create and activate a virtual environment:
+Create and activate the virtual environment:
 
 ```bash
 uv venv .venv
 source .venv/bin/activate
 ```
 
-On Windows PowerShell use:
-
-```powershell
-.venv\Scripts\activate
-```
-
-3. Install dependencies:
+Install dependencies:
 
 ```bash
 uv sync
 ```
 
 ## Run
-Start FastAPI:
+
+Start the API locally:
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-## Security/RBAC Model
-1. Tenant data isolation remains strict for account/profile/admin management.
-2. Shared marketplace behavior is enabled for students: they may enroll into courses across tenants.
-3. Student identity for enrollment and quiz submission is always derived server-side from the auth session.
+Default local API URL:
 
-## Tests (Phase 6)
-RBAC/ownership tests are in `tests/` and cover:
-1. Quiz submission ownership and IDOR protections.
-2. Enrollment ownership + tenant enforcement rules.
-3. Admin tenant-bound mutation protections.
+```text
+http://localhost:8000
+```
 
-Run:
+## Important Configuration
+
+Shared backend deployment/product constants are centralized in:
+
+- [app/core/settings.py](./app/core/settings.py)
+
+Important values include:
+
+- `FRONTEND_URL`
+- `CORS_ORIGINS`
+- `STRIPE_BRAND_BUTTON_COLOR`
+- `MAX_SUBSCRIPTION_PLANS`
+- `TENANT_ID`
+
+Update environment variables or `settings.py`-backed config instead of duplicating values inside routers/services.
+
+## Main Domains
+
+- Auth and RBAC
+- Courses and enrollment
+- Student progress
+- AI/adaptive learning
+- Quiz generation and submissions
+- Student performance and leaderboard
+- Payments and billing
+- Tenant/admin/super-admin operations
+
+## Verification
+
+Compile-check backend modules:
+
+```bash
+PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m compileall app scripts
+```
+
+Run tests:
 
 ```bash
 pytest -q
 ```
 
-If you install dev dependencies explicitly:
+If dev extras are needed:
 
 ```bash
 uv sync --extra dev
 ```
 
-## API Migration Notes (Phase 7)
-See full details in [docs/API_MIGRATION.md](docs/API_MIGRATION.md).
+## Database / Integrity Utilities
 
-Key contract changes:
-1. `POST /quiz-submissions` no longer accepts `studentId` or `tenantId` from client.
-2. `GET/DELETE /quiz-submissions/*` now enforce role + ownership rules.
-3. `POST /courses/enroll` and `/courses/unenroll` derive student identity for student role; admin/teacher remain tenant-bound.
-
-## Database Consistency Audit
-Use the integrity checker to validate document references and tenant consistency:
+Consistency audit:
 
 ```bash
 python -m scripts.check_db_consistency
 ```
 
+Repair helper:
+
+```bash
+python -m scripts.repair_db_consistency
+```
+
+Global-student cleanup helper:
+
+```bash
+python -m scripts.cleanup_global_student_model
+```
+
+Subscription-plan normalization helper:
+
+```bash
+python -m scripts.normalize_default_subscription_plan_limits
+```
+
+## Security Notes
+
+- Student identity for protected student actions is derived server-side from the authenticated session.
+- Admin and teacher mutations remain tenant-scoped.
+- Quiz submissions and course access should rely on ownership/resource checks rather than trusting client-provided IDs.
+
 ## Notes
-1. Run from repository root (`backend/`) so imports resolve correctly.
-2. `app/main.py` registers startup index creation via `ensure_indexes()`.
+
+- Run commands from the `backend/` directory so imports resolve correctly.
+- `app/main.py` registers startup index creation through the database bootstrap path.
+- Stripe return URLs and branding are centralized so billing/checkout changes do not require router-by-router edits.

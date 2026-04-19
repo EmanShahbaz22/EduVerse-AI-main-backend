@@ -19,21 +19,42 @@ from app.schemas.subscription_plans import (
 router = APIRouter(
     prefix="/subscription-plans",
     tags=["Subscription Plans"],
-    dependencies=[Depends(require_role("super_admin"))],
 )
+
+
+@router.get("/public", response_model=list[SubscriptionPlanResponse])
+async def list_public_plans(
+    status_filter: Optional[str] = Query(
+        default="active", alias="status", description="Filter by active/inactive status"
+    )
+):
+    plans = await list_subscription_plans(status_filter=status_filter or "active")
+    return sorted(plans, key=lambda plan: (plan.get("pricePerMonth", 0), plan.get("name", "")))
+
+
+@router.get("/public/{plan_id}", response_model=SubscriptionPlanResponse)
+async def get_public_plan(plan_id: str):
+    plan = await get_subscription_plan(plan_id)
+    if not plan or plan.get("status") != "active":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Subscription plan not found",
+        )
+    return plan
 
 
 @router.get("/", response_model=list[SubscriptionPlanResponse])
 async def list_plans(
     status_filter: Optional[str] = Query(
         default=None, alias="status", description="Filter by active/inactive status"
-    )
+    ),
+    current_user=Depends(require_role("super_admin")),
 ):
     return await list_subscription_plans(status_filter=status_filter)
 
 
 @router.get("/{plan_id}", response_model=SubscriptionPlanResponse)
-async def get_plan(plan_id: str):
+async def get_plan(plan_id: str, current_user=Depends(require_role("super_admin"))):
     plan = await get_subscription_plan(plan_id)
     if not plan:
         raise HTTPException(
@@ -44,12 +65,18 @@ async def get_plan(plan_id: str):
 
 
 @router.post("/", response_model=SubscriptionPlanResponse, status_code=201)
-async def create_plan(payload: SubscriptionPlanCreate):
+async def create_plan(
+    payload: SubscriptionPlanCreate, current_user=Depends(require_role("super_admin"))
+):
     return await create_subscription_plan(payload.model_dump())
 
 
 @router.patch("/{plan_id}", response_model=SubscriptionPlanResponse)
-async def update_plan(plan_id: str, payload: SubscriptionPlanUpdate):
+async def update_plan(
+    plan_id: str,
+    payload: SubscriptionPlanUpdate,
+    current_user=Depends(require_role("super_admin")),
+):
     updated = await update_subscription_plan(plan_id, payload.model_dump(exclude_unset=True))
     if not updated:
         raise HTTPException(
@@ -60,7 +87,9 @@ async def update_plan(plan_id: str, payload: SubscriptionPlanUpdate):
 
 
 @router.delete("/{plan_id}")
-async def delete_plan(plan_id: str):
+async def delete_plan(
+    plan_id: str, current_user=Depends(require_role("super_admin"))
+):
     deleted = await delete_subscription_plan(plan_id)
     if not deleted:
         raise HTTPException(

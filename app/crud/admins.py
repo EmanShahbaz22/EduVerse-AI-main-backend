@@ -210,9 +210,24 @@ async def update_admin_profile(admin_id: str, data: AdminUpdateProfile):
         )
     if user_id:
         await users_collection.update_one({"_id": user_id}, {"$set": update_data})
+    
     await db.admins.update_one(
         {"_id": ObjectId(admin_id)}, {"$set": {"updatedAt": datetime.utcnow()}}
     )
+    
+    # Sync contact updates to the managed Tenant Document
+    tenant_updates = {}
+    if "contactNo" in update_data:
+        tenant_updates["contactNumber"] = update_data["contactNo"]
+    if "country" in update_data:
+        tenant_updates["address"] = update_data["country"]
+        
+    if tenant_updates and admin.get("tenantId"):
+        await db.tenants.update_one(
+            {"_id": ObjectId(admin["tenantId"])},
+            {"$set": tenant_updates}
+        )
+        
     return merge_user_data_admin(
         await db.admins.find_one({"_id": ObjectId(admin_id)}),
         await users_collection.find_one({"_id": user_id}),

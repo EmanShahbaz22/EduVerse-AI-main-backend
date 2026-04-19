@@ -6,6 +6,7 @@ from app.db.database import db, users_collection
 from app.schemas.teachers import TeacherCreate, TeacherUpdate
 from app.utils.security import hash_password, verify_password
 from app.utils.exceptions import not_found, bad_request
+from app.crud.tenants import check_tenant_limit
 
 
 def to_oid(id_str: str, field: str) -> ObjectId:
@@ -108,6 +109,9 @@ async def create_or_link_teacher_for_tenant(
     Returns: (teacher_response, mode, generated_password)
       mode: created | linked_existing | exists
     """
+    # Enforce subscription limits
+    await check_tenant_limit(tenant_id, "Teachers")
+
     tenant = await db.tenants.find_one({"_id": ObjectId(tenant_id)})
     if not tenant:
         raise HTTPException(404, f"Tenant not found: {tenant_id}")

@@ -18,6 +18,13 @@ ALLOWED_EXTENSIONS = {
 }
 MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 FILE_ID_PATTERN = re.compile(r"^[a-f0-9]{32}\.(pdf|docx)$")
+CERTIFICATE_FILE_ID_PATTERN = re.compile(r"^cert_[a-f0-9]{32}\.pdf$")
+
+
+def _sanitize_download_name(filename: str | None, fallback: str) -> str:
+    raw_name = (filename or fallback).strip()
+    cleaned = re.sub(r"[^A-Za-z0-9 ._-]+", "", raw_name).strip().strip(".")
+    return cleaned or fallback
 
 
 def _validate_extension(filename: str) -> str:
@@ -73,6 +80,11 @@ async def upload_assignment(
     if len(content) > MAX_SIZE_BYTES:
         raise HTTPException(400, "File exceeds 10 MB limit")
 
+    tenant_id = current_user.get("tenant_id")
+    if tenant_id:
+        from app.utils.limits import check_tenant_limits
+        await check_tenant_limits(tenant_id, "storage", len(content))
+
     detected_mime = _sniff_file_type(ext, content)
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -81,6 +93,14 @@ async def upload_assignment(
 
     with open(file_path, "wb") as stream:
         stream.write(content)
+
+    if tenant_id:
+        from bson import ObjectId
+        from app.db.database import db
+        await db.tenants.update_one(
+            {"_id": ObjectId(tenant_id)},
+            {"$inc": {"totalStorageUsedBytes": len(content)}}
+        )
 
     return {
         "url": f"/uploads/assignment/{file_id}",
@@ -98,3 +118,20 @@ async def get_assignment_file(file_id: str, current_user=Depends(get_current_use
     ext = os.path.splitext(file_id)[1].lower()
     media_type = ALLOWED_EXTENSIONS.get(ext, "application/octet-stream")
     return FileResponse(path=path, media_type=media_type, filename=file_id)
+
+@router.get("/certificate/{file_id}")
+async def get_certificate_file(file_id: str, name: str | None = None):
+    # Certificates are public to anyone with the link
+    if not CERTIFICATE_FILE_ID_PATTERN.match(file_id):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    path = os.path.join(UPLOAD_DIR, "certificates", file_id)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Certificate not found")
+        
+    ext = os.path.splitext(file_id)[1].lower()
+    media_type = ALLOWED_EXTENSIONS.get(ext, "application/pdf")
+    download_name = _sanitize_download_name(name, file_id)
+    if not download_name.lower().endswith(".pdf"):
+        download_name = f"{download_name}.pdf"
+    return FileResponse(path=path, media_type=media_type, filename=download_name)

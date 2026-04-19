@@ -6,6 +6,8 @@ from typing import Optional, Any
 from calendar import month_abbr
 import re
 
+from app.utils.tenant_students import count_tenant_students, get_tenant_course_ids
+
 
 def _ensure_objectid(_id: str, name: str = "id"):
     if not ObjectId.is_valid(_id):
@@ -19,12 +21,20 @@ def _ensure_objectid(_id: str, name: str = "id"):
 # -------------------------
 # Convert MongoDB document → API format (Python dict)
 # -------------------------
-def serialize_tenant(tenant: dict, metrics: Optional[dict] = None) -> dict:
+def serialize_tenant(tenant: dict, metrics: Optional[dict] = None, plan_doc: Optional[dict] = None) -> dict:
     metrics = metrics or {}
     raw_logo = tenant.get("tenantLogoUrl")
     tenant_logo = str(raw_logo).strip() if raw_logo is not None else None
     if not tenant_logo:
         tenant_logo = None
+    tenant_country = tenant.get("address") or tenant.get("country")
+        
+    # Dynamically resolve plan info if plan_doc is provided
+    plan_name = plan_doc.get("name") if plan_doc else tenant.get("subscriptionPlan")
+    plan_category = plan_doc.get("category", "free") if plan_doc else tenant.get("subscriptionCategory", "free")
+    plan_cycle = plan_doc.get("billingCycle") if plan_doc else tenant.get("subscriptionBillingCycle")
+    plan_price = plan_doc.get("pricePerMonth") if plan_doc else tenant.get("subscriptionPriceMonthly")
+    
     return {
         "id": str(tenant["_id"]),  # convert ObjectId -> string
         "tenantName": tenant["tenantName"],
@@ -32,16 +42,17 @@ def serialize_tenant(tenant: dict, metrics: Optional[dict] = None) -> dict:
         "adminEmail": tenant["adminEmail"],
         "status": tenant.get("status", "active"),
         "contactNumber": tenant.get("contactNumber"),
-        "address": tenant.get("address"),
+        "address": tenant_country,
         "subscriptionId": (
             str(tenant.get("subscriptionId")) if tenant.get("subscriptionId") else None
         ),
-        "subscriptionCategory": tenant.get("subscriptionCategory", "free"),
-        "subscriptionPlan": tenant.get("subscriptionPlan"),
-        "subscriptionBillingCycle": tenant.get("subscriptionBillingCycle"),
-        "subscriptionPriceMonthly": tenant.get("subscriptionPriceMonthly"),
+        "subscriptionCategory": plan_category,
+        "subscriptionPlan": plan_name,
+        "subscriptionBillingCycle": plan_cycle,
+        "subscriptionPriceMonthly": plan_price,
         "subscriptionStartDate": tenant.get("subscriptionStartDate"),
         "subscriptionExpiryDate": tenant.get("subscriptionExpiryDate"),
+        "gracePeriodUntil": tenant.get("gracePeriodUntil"),
         "subscriptionNotes": tenant.get("subscriptionNotes"),
         "courses": int(metrics.get("courses", 0)),
         "teachers": int(metrics.get("teachers", 0)),
@@ -51,11 +62,81 @@ def serialize_tenant(tenant: dict, metrics: Optional[dict] = None) -> dict:
     }
 
 
+async def is_subscription_active(tenant: dict | ObjectId | str) -> bool:
+    """
+    Checks if the tenant's subscription is active considering:
+    1. Standard Expiry + 48-hour auto-grace (automatic).
+    2. Manual Grace Period (gracePeriodUntil).
+    """
+    from datetime import timedelta
+    
+    if isinstance(tenant, (ObjectId, str)):
+        oid = ObjectId(tenant) if isinstance(tenant, str) else tenant
+        tenant = await db.tenants.find_one({"_id": oid, "isDeleted": False})
+        
+    if not tenant:
+        return False
+        
+    if tenant.get("status") != "active":
+        return False
+        
+    now = datetime.utcnow()
+    expiry = tenant.get("subscriptionExpiryDate")
+    grace = tenant.get("gracePeriodUntil")
+    
+    # 1. Check manual grace (priority)
+    if grace and now < grace:
+        return True
+        
+    # 2. Check standard expiry + 48h auto-grace
+    if expiry:
+        # Standard 48-hour grace period
+        if now < (expiry + timedelta(hours=48)):
+            return True
+            
+    # If no expiry is set at all (e.g. legacy or custom manual), we assume active 
+    # unless logic dictates otherwise. For this system, we'll assume expiry is required for paid/trial.
+    if not expiry:
+        return True
+        
+    return False
+
+async def check_tenant_limit(tenant_id: str | ObjectId, resource_type: str) -> bool:
+    """
+    Checks if a tenant can create more of a resource (students, teachers, courses).
+    Returns True if allowed, raises 403 or 402 if limit reached or expired.
+    Uses centralized utility in app/utils/limits.py
+    """
+    from app.utils.limits import check_tenant_limits
+    # check_tenant_limits expects lowercase plural or specific strings
+    res_map = {"Students": "students", "Teachers": "teachers", "Courses": "courses"}
+    await check_tenant_limits(tenant_id, res_map.get(resource_type, resource_type.lower()))
+    return True
+
+async def check_and_update_tenant_status(tenant_id: str | ObjectId):
+    """
+    Called periodically or on-demand to sync the 'status' field with actual expiry/grace logic.
+    """
+    tenant_oid = ObjectId(tenant_id) if isinstance(tenant_id, str) else tenant_id
+    tenant = await db.tenants.find_one({"_id": tenant_oid, "isDeleted": False})
+    if not tenant:
+        return
+
+    is_active = await is_subscription_active(tenant)
+    new_status = "active" if is_active else "inactive"
+    
+    if tenant.get("status") != new_status:
+        await db.tenants.update_one(
+            {"_id": tenant_oid}, 
+            {"$set": {"status": new_status, "updatedAt": datetime.utcnow()}}
+        )
+
 async def _tenant_metrics(tenant_id: ObjectId) -> dict:
+    tenant_courses = await get_tenant_course_ids(tenant_id)
     return {
-        "courses": await db.courses.count_documents({"tenantId": tenant_id}),
+        "courses": len(tenant_courses),
         "teachers": await db.teachers.count_documents({"tenantId": tenant_id}),
-        "students": await db.students.count_documents({"tenantId": tenant_id}),
+        "students": await count_tenant_students(tenant_id),
     }
 
 
@@ -65,6 +146,9 @@ async def _tenant_metrics(tenant_id: ObjectId) -> dict:
 async def create_tenant(request):
     # Convert Pydantic model to dictionary
     data = request.dict()
+    if data.get("country") and not data.get("address"):
+        data["address"] = data["country"]
+    data.pop("country", None)
 
     # duplicate check: any tenant with same name that isn't soft-deleted
     existing = await db.tenants.find_one(
@@ -172,7 +256,10 @@ async def get_all_tenants(
     results = []
     for tenant in tenants:
         metrics = await _tenant_metrics(tenant["_id"])
-        results.append(serialize_tenant(tenant, metrics))
+        plan_doc = None
+        if tenant.get("subscriptionId"):
+             plan_doc = await db.subscriptionPlans.find_one({"_id": tenant["subscriptionId"]})
+        results.append(serialize_tenant(tenant, metrics, plan_doc))
     return results
 
 
@@ -185,7 +272,10 @@ async def get_tenant(_id: str):
     if not tenant:
         return None
     metrics = await _tenant_metrics(tenant["_id"])
-    return serialize_tenant(tenant, metrics)
+    plan_doc = None
+    if tenant.get("subscriptionId"):
+         plan_doc = await db.subscriptionPlans.find_one({"_id": tenant["subscriptionId"]})
+    return serialize_tenant(tenant, metrics, plan_doc)
 
 
 # -------------------------
@@ -217,17 +307,37 @@ async def update_tenant(_id: str, updates: dict):
         _ensure_objectid(safe_updates["subscriptionId"], "subscriptionId")
         safe_updates["subscriptionId"] = ObjectId(safe_updates["subscriptionId"])
 
+    if "country" in safe_updates and "address" not in safe_updates:
+        safe_updates["address"] = safe_updates["country"]
+    safe_updates.pop("country", None)
+
     safe_updates["updatedAt"] = datetime.utcnow()
 
     await db.tenants.update_one(
         {"_id": ObjectId(_id), "isDeleted": False}, {"$set": safe_updates}
     )
 
+    # Propagate changes to the default Admin associated with this Tenant
+    admin_updates = {}
+    if "contactNumber" in safe_updates:
+        admin_updates["contactNo"] = safe_updates["contactNumber"]
+    if "address" in safe_updates:
+        admin_updates["country"] = safe_updates["address"]
+        
+    if admin_updates:
+        await db.users.update_one(
+            {"tenantId": ObjectId(_id), "role": "admin"},
+            {"$set": admin_updates}
+        )
+
     tenant = await db.tenants.find_one({"_id": ObjectId(_id), "isDeleted": False})
     if not tenant:
         return None
     metrics = await _tenant_metrics(tenant["_id"])
-    return serialize_tenant(tenant, metrics)
+    plan_doc = None
+    if tenant.get("subscriptionId"):
+         plan_doc = await db.subscriptionPlans.find_one({"_id": tenant["subscriptionId"]})
+    return serialize_tenant(tenant, metrics, plan_doc)
 
 
 # -------------------------

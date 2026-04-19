@@ -3,6 +3,9 @@ from bson import ObjectId
 from typing import Optional
 
 from app.schemas.quizzes import QuizCreate, QuizUpdate, QuizResponse
+from app.schemas.adaptive_learning import AIQuizResponse
+from app.db.database import ai_quiz_sessions_collection
+from app.services.quiz_generator import normalize_quiz_questions
 from app.crud.quizzes import (
     create_quiz,
     get_quiz,
@@ -18,16 +21,40 @@ router = APIRouter(prefix="/quizzes", tags=["Quizzes"])
 
 
 # ------------------ STUDENT SPECIFIC ------------------
-@router.get("/student/me", response_model=list[QuizResponse])
+@router.get("/student/me", response_model=list[AIQuizResponse])
 async def get_my_quizzes(current_user=Depends(get_current_user)):
     """
-    Fetch quizzes ONLY for courses the student is enrolled in.
+    Return AI-generated quiz sessions for the current student.
+    Falls back to legacy enrolled-course quizzes if none exist.
     """
     if current_user["role"] != "student":
         raise HTTPException(
             status_code=403, detail="Only students can access this endpoint"
         )
 
+    # Prefer AI quiz sessions (adaptive pipeline output)
+    student_id = current_user.get("student_id") or current_user.get("user_id")
+    ai_cursor = ai_quiz_sessions_collection.find(
+        {"studentId": student_id}
+    ).sort("generatedAt", -1)
+    ai_quizzes = []
+    async for q in ai_cursor:
+        ai_quizzes.append(
+            AIQuizResponse(
+                id=str(q.get("_id")),
+                studentId=str(q.get("studentId")),
+                courseId=str(q.get("courseId")),
+                lessonId=q.get("lessonId"),
+                topic=q.get("topic", ""),
+                questions=normalize_quiz_questions(q.get("questions", [])),
+                generatedAt=q.get("generatedAt"),
+            )
+        )
+
+    if ai_quizzes:
+        return ai_quizzes
+
+    # Legacy quizzes collection (kept for backward compatibility)
     return await get_student_quizzes(
         user_id=current_user["user_id"], tenant_id=current_user.get("tenant_id")
     )

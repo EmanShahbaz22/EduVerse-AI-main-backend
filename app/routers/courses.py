@@ -5,6 +5,8 @@ from app.schemas.courses import (
     CourseCreate,
     CourseUpdate,
     CourseResponse,
+    CourseMetadataResponse,
+    CourseCategorySettingsUpdate,
     CourseEnrollment,
     ReorderLessonsRequest,
     ReorderModulesRequest,
@@ -14,6 +16,10 @@ from app.schemas.courses import (
 from app.crud.courses import course_crud
 from app.auth.dependencies import get_current_user, require_role
 from app.db.database import db
+from app.core.course_metadata import (
+    get_course_metadata,
+    update_tenant_custom_categories,
+)
 
 router = APIRouter(
     prefix="/courses", tags=["courses"], dependencies=[Depends(get_current_user)]
@@ -71,13 +77,11 @@ async def _resolve_enrollment_context(enrollment: CourseEnrollment, current_user
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Valid studentId is required",
             )
-        student = await db.students.find_one(
-            {"_id": ObjectId(enrollment.studentId), "tenantId": ObjectId(tenant_id)}
-        )
+        student = await db.students.find_one({"_id": ObjectId(enrollment.studentId)})
         if not student:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Forbidden: student belongs to a different tenant",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Student not found",
             )
         return enrollment.studentId, tenant_id, True
 
@@ -139,8 +143,9 @@ async def get_courses(
     limit: int = Query(100, ge=1, le=100),
     current_user=Depends(get_current_user),
 ):
-    if current_user["role"] == "student":
+    if current_user["role"] == "student" or not tenantId:
         result = await course_crud.get_marketplace_courses(
+            tenant_id=tenantId,
             teacher_id=teacher_id,
             category=category,
             search=search,
@@ -167,6 +172,49 @@ async def get_courses(
     return result["courses"]
 
 
+@router.get("/metadata", response_model=CourseMetadataResponse)
+async def get_course_metadata_options(current_user=Depends(get_current_user)):
+    return await get_course_metadata(current_user.get("tenant_id"))
+
+
+@router.put(
+    "/metadata/categories",
+    response_model=CourseMetadataResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def update_course_metadata_categories(
+    payload: CourseCategorySettingsUpdate,
+    current_user=Depends(get_current_user),
+):
+    tenant_id = current_user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant context required",
+        )
+
+    try:
+        return await update_tenant_custom_categories(tenant_id, payload.categories)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/recommendations/{student_id}", response_model=List[CourseResponse])
+async def get_recommended_courses(
+    student_id: str,
+    limit: int = Query(10, ge=1, le=50),
+    current_user=Depends(require_role("student")),
+):
+    if current_user.get("student_id") != student_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: cannot access another student's recommendations",
+        )
+    from app.services.recommendation import get_recommended_courses as _recommend
+    courses = await _recommend(student_id, limit)
+    return courses
+
+
 @router.get("/{course_id}", response_model=CourseResponse)
 async def get_course(
     course_id: str,
@@ -174,8 +222,15 @@ async def get_course(
     current_user=Depends(get_current_user),
 ):
     if current_user["role"] == "student":
+        is_enrolled = False
+        student_id = current_user.get("student_id")
+        if student_id and ObjectId.is_valid(student_id):
+            student = await db.students.find_one({"_id": ObjectId(student_id)})
+            if student:
+                enrolled = {str(cid) for cid in (student.get("enrolledCourses") or [])}
+                is_enrolled = course_id in enrolled
         result = await course_crud.get_course_by_id_any_tenant(
-            course_id, public_only=True
+            course_id, public_only=not is_enrolled
         )
     elif tenantId:
         result = await course_crud.get_course_by_id(course_id, tenantId)
@@ -284,6 +339,9 @@ async def unenroll_student_from_course(
             raise HTTPException(403, result["message"])
         raise HTTPException(400, result["message"])
     return result
+
+
+
 
 
 @router.get("/student/{student_id}", response_model=List[CourseWithProgress])

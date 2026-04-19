@@ -4,6 +4,9 @@ from urllib.parse import urlsplit
 
 # Optional default tenant; keep empty by default to avoid hard-coded cross-tenant coupling.
 TENANT_ID = os.getenv("TENANT_ID", "")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200").rstrip("/")
+
+MAX_SUBSCRIPTION_PLANS = int(os.getenv("MAX_SUBSCRIPTION_PLANS", "3"))
 
 
 def _normalize_origin(origin: str) -> str | None:
@@ -26,6 +29,8 @@ def get_cors_origins() -> list[str]:
         "http://127.0.0.1:4200",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
+        "http://localhost:8001",
+        "http://127.0.0.1:8001",
     ]
 
     candidates: list[str] = []

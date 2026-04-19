@@ -48,26 +48,6 @@ async def change_password(
     )
 
 
-# -----------------------------------------------------
-# CREATE STUDENT  (POST /students/{tenantId})
-# -----------------------------------------------------
-@router.post(
-    "/{tenantId}",
-    response_model=StudentResponse,
-)
-async def create_student(
-    tenantId: str,
-    student: StudentCreate,
-    current_user=Depends(require_role("admin", "super_admin")),
-):
-    _enforce_tenant_scope(current_user, tenantId)
-    new_student = await crud_student.create_student(student, tenantId)
-
-    new_student["id"] = new_student["_id"]
-    del new_student["_id"]
-
-    return StudentResponse(**new_student)
-
 
 # -----------------------------------------------------
 # LIST STUDENTS FOR TENANT

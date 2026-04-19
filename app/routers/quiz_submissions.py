@@ -48,14 +48,12 @@ async def _get_current_student(current_user: dict):
     return student
 
 
-async def _ensure_student_in_tenant(student_id: str, tenant_id: str):
-    student = await db.students.find_one(
-        {"_id": ObjectId(student_id), "tenantId": ObjectId(tenant_id)}
-    )
+async def _ensure_student_exists(student_id: str):
+    student = await db.students.find_one({"_id": ObjectId(student_id)})
     if not student:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: student belongs to a different tenant",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student not found",
         )
 
 
@@ -71,24 +69,43 @@ async def submit_and_grade_route(
 
     student = await _get_current_student(current_user)
     quiz = await db.quizzes.find_one({"_id": ObjectId(data.quizId), "isDeleted": {"$ne": True}})
-    if not quiz:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Quiz not found.",
-        )
-    if str(quiz.get("courseId")) != data.courseId:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Quiz does not belong to the selected course.",
-        )
+    tenant_val = None
+    if quiz:
+        if str(quiz.get("courseId")) != data.courseId:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quiz does not belong to the selected course.",
+            )
+        tenant_val = quiz.get("tenantId")
+    else:
+        # Allow AI-generated quiz sessions
+        from app.db.database import ai_quiz_sessions_collection
+        quiz = await ai_quiz_sessions_collection.find_one({"_id": ObjectId(data.quizId)})
+        if not quiz:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Quiz not found.",
+            )
+        if str(quiz.get("studentId")) != str(student["_id"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Quiz does not belong to this student.",
+            )
+        tenant_val = quiz.get("tenantId")
+        # AI quiz stores courseId as plain string
+        if str(quiz.get("courseId")) != data.courseId:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quiz does not belong to the selected course.",
+            )
 
-    tenant_val = quiz.get("tenantId")
     if not tenant_val:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Quiz tenant context missing",
-        )
-    tenant_id = str(tenant_val)
+        # Derive tenant from course if missing (e.g., AI quiz session)
+        course_doc = await db.courses.find_one({"_id": ObjectId(data.courseId)})
+        if course_doc and course_doc.get("tenantId"):
+            tenant_val = course_doc.get("tenantId")
+
+    tenant_id = str(tenant_val) if tenant_val else None
 
     result = await submit_and_grade_submission(
         data, student_id=str(student["_id"]), tenant_id=tenant_id
@@ -154,7 +171,7 @@ async def get_student_submissions(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Tenant context required",
             )
-        await _ensure_student_in_tenant(student_id, tenant_id)
+        await _ensure_student_exists(student_id)
     elif role != "super_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -249,7 +266,7 @@ async def student_analytics(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Tenant context required",
             )
-        await _ensure_student_in_tenant(student_id, tenant_id)
+        await _ensure_student_exists(student_id)
     elif role != "super_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

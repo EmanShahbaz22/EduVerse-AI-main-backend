@@ -1,6 +1,7 @@
 from bson import ObjectId
 
 from app.db.database import db
+from app.utils.tenant_students import get_tenant_student_query
 
 
 def convert_objectids(doc):
@@ -31,7 +32,10 @@ async def get_all_students(tenant_id: str):
         return []
 
     tenant_oid = ObjectId(tenant_id)
-    async for s in db.students.find({"tenantId": tenant_oid}):
+
+    query = await get_tenant_student_query(tenant_oid)
+
+    async for s in db.students.find(query):
         user_oid = _to_objectid(s.get("userId"))
         if not user_oid:
             continue
@@ -48,7 +52,7 @@ async def get_all_students(tenant_id: str):
             "country": user.get("country"),
             "enrolledCourses": s.get("enrolledCourses", []),
             "completedCourses": s.get("completedCourses", []),
-            "tenantId": s.get("tenantId"),
+            "tenantId": None,
             "userId": s.get("userId"),
         }
 
@@ -82,6 +86,8 @@ async def get_all_teachers(tenant_id: str):
                 "email": user.get("email", ""),
                 "status": user.get("status", "active"),
                 "role": user.get("role", "teacher"),
+                "contactNo": user.get("contactNo", ""),
+                "country": user.get("country", ""),
                 "assignedCourses": [str(c) for c in t.get("assignedCourses", [])],
                 "qualifications": t.get("qualifications", []),
                 "subjects": t.get("subjects", []),

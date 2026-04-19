@@ -2,7 +2,6 @@ from datetime import datetime
 from bson import ObjectId
 from app.db.database import db, users_collection
 from app.schemas.teachers import TeacherUpdate
-from app.schemas.assignments import AssignmentCreate
 from app.schemas.quizzes import QuizCreate
 from app.crud.quizzes import serialize_quiz
 from app.crud.teachers.core import (
@@ -14,43 +13,6 @@ from app.crud.teachers.core import (
 )
 from app.utils.security import hash_password, verify_password
 from app.utils.exceptions import not_found, bad_request
-
-
-async def serialize_assignment(a: dict) -> dict:
-    return {
-        "id": str(a["_id"]),
-        "courseId": str(a["courseId"]),
-        "teacherId": str(a["teacherId"]),
-        "title": a.get("title", ""),
-        "description": a.get("description", ""),
-        "dueDate": a.get("dueDate"),
-        "dueTime": a.get("dueTime"),
-        "totalMarks": a.get("totalMarks"),
-        "passingMarks": a.get("passingMarks"),
-        "status": a.get("status", "active"),
-        "fileUrl": a.get("fileUrl", ""),
-        "allowedFormats": a.get("allowedFormats", []),
-        "tenantId": str(a["tenantId"]),
-        "uploadedAt": a.get("uploadedAt"),
-        "updatedAt": a.get("updatedAt"),
-    }
-
-
-async def get_teacher_assignments_route(teacher_id: str):
-    cursor = db.assignments.find({"teacherId": to_oid(teacher_id, "teacherId")})
-    return [serialize_assignment(a) async for a in cursor]
-
-
-async def create_teacher_assignment_route(data: AssignmentCreate):
-    d = data.dict()
-    d["courseId"] = to_oid(d["courseId"], "courseId")
-    d["teacherId"] = to_oid(d["teacherId"], "teacherId")
-    d["tenantId"] = to_oid(d["tenantId"], "tenantId")
-    d["uploadedAt"] = d["updatedAt"] = datetime.utcnow()
-    result = await db.assignments.insert_one(d)
-    return serialize_assignment(
-        await db.assignments.find_one({"_id": result.inserted_id})
-    )
 
 
 async def get_teacher_quizzes_route(teacher_id: str):
@@ -69,23 +31,72 @@ async def create_teacher_quiz_route(data: QuizCreate):
 
 
 async def get_teacher_dashboard(teacher_id: str):
-    assignments = await get_teacher_assignments_route(teacher_id)
-    quizzes = await get_teacher_quizzes_route(teacher_id)
     courses = [
         c async for c in db.courses.find({"teacherId": to_oid(teacher_id, "teacherId")})
     ]
+    quiz_lessons = sum(
+        1
+        for course in courses
+        for module in course.get("modules", [])
+        for lesson in module.get("lessons", [])
+        if lesson.get("type") == "quiz"
+    )
     return {
-        "totalAssignments": len(assignments),
-        "totalQuizzes": len(quizzes),
         "totalCourses": len(courses),
+        "totalQuizLessons": quiz_lessons,
     }
 
 
 async def get_teacher_students(teacher_id: str):
-    return [
-        s
-        async for s in db.students.find({"teacherId": to_oid(teacher_id, "teacherId")})
+    # Find all courses taught by this teacher
+    teacher_courses = [
+        str(c["_id"]) 
+        async for c in db.courses.find({"teacherId": to_oid(teacher_id, "teacherId")}, {"_id": 1})
     ]
+    teacher_courses_oids = [ObjectId(cid) for cid in teacher_courses]
+    
+    if not teacher_courses:
+        return []
+
+    # Find all students enrolled in any of these courses
+    pipeline = [
+        {
+            "$match": {
+                "enrolledCourses": {
+                    "$in": teacher_courses + teacher_courses_oids
+                }
+            }
+        },
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "userId",
+                "foreignField": "_id",
+                "as": "userDetails",
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$userDetails",
+                "preserveNullAndEmptyArrays": True
+            }
+        }
+    ]
+
+    results = []
+    async for doc in db.students.aggregate(pipeline):
+        ui = doc.get("userDetails", {}) or {}
+        results.append({
+            "id": str(doc["_id"]),
+            "name": ui.get("fullName", ""),
+            "email": ui.get("email", ""),
+            "class": doc.get("className", "N/A"),
+            "rollNo": doc.get("rollNo", "N/A"),
+            "status": ui.get("status", "Inactive"),
+            "profileImageURL": ui.get("profileImageURL", ""),
+        })
+
+    return results
 
 
 async def get_teacher_courses(teacher_id: str):

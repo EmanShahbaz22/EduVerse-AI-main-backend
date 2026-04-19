@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from pydantic import BaseModel
 
 class AnswerItem(BaseModel):
@@ -19,7 +19,8 @@ class QuizSubmissionCreate(BaseModel):
     """
     quizId: str                # quiz being submitted
     courseId: str              # course to which the quiz belongs
-    answers: list[AnswerItem]
+    # Accept flexible payloads (AnswerItem dicts or raw strings). Normalised in CRUD.
+    answers: list[Any]
 
 class QuizSubmissionResponse(BaseModel):
     """

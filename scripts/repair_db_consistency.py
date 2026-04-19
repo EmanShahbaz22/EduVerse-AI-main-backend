@@ -88,7 +88,6 @@ async def _repair(issues: dict[str, list[ObjectId]], apply: bool):
         user = await db.users.find_one({"_id": uid})
         if not user:
             continue
-        tenant_id = user.get("tenantId")
         student_doc = {
             "userId": uid,
             "enrolledCourses": [],
@@ -96,8 +95,6 @@ async def _repair(issues: dict[str, list[ObjectId]], apply: bool):
             "createdAt": now,
             "updatedAt": now,
         }
-        if tenant_id:
-            student_doc["tenantId"] = tenant_id
 
         res = await db.students.insert_one(student_doc)
         student_id = res.inserted_id
@@ -118,8 +115,6 @@ async def _repair(issues: dict[str, list[ObjectId]], apply: bool):
             "createdAt": now,
             "updatedAt": now,
         }
-        if tenant_id:
-            perf_doc["tenantId"] = tenant_id
 
         await db.studentPerformance.insert_one(perf_doc)
 

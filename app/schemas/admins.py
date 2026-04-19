@@ -44,8 +44,8 @@ class AdminResponse(BaseModel):
     contactNo: Optional[str] = None
     profileImageURL: Optional[str] = ""
     status: Optional[str] = "active"
-    createdAt: datetime = Field(default_factory=datetime.utcnow())
-    updatedAt: Optional[datetime] = Field(default_factory=datetime.utcnow())
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    updatedAt: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
     class Config:
         from_attributes = True

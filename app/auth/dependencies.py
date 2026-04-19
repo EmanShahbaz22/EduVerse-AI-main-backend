@@ -47,7 +47,7 @@ async def get_current_user(
     coll = role_map.get(role)
     if coll is not None:
         role_doc_query = {"userId": user["_id"]}
-        if user.get("tenantId"):
+        if role != "student" and user.get("tenantId"):
             role_doc_query["tenantId"] = user.get("tenantId")
 
         role_doc = await coll.find_one(role_doc_query)
@@ -68,6 +68,8 @@ async def get_current_user(
 
     if role == "super_admin":
         super_admin_id = str(user["_id"])
+    elif role == "student":
+        tenant_id = None
 
     return {
         "user_id": str(user["_id"]),
