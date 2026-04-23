@@ -21,9 +21,10 @@ class PaymentResponse(BaseModel):
     """Payment record returned to the frontend."""
 
     id: str
-    courseId: str
-    studentId: str
+    courseId: Optional[str] = None
+    studentId: Optional[str] = None
     tenantId: str
+    paymentType: str = "course" # course | subscription
     amount: float
     currency: str
     status: str  # pending | completed | failed
