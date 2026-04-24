@@ -1,12 +1,16 @@
 # app/routers/payments.py
 import asyncio
 import os
+import logging
 
 from datetime import datetime
 
 import stripe
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Depends, Request
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 from app.auth.dependencies import require_role
 from app.schemas.payments import CheckoutRequest, PaymentResponse
@@ -174,6 +178,52 @@ async def create_payment_intent(
 # ─── 2. Stripe Webhook (called by Stripe, not by frontend) ───────────
 
 
+async def _process_successful_payment(
+    course_id: str, student_id: str, tenant_id: str | None, stripe_session_id: str
+):
+    """
+    Helper to mark a payment as completed and enroll the student.
+    Uses metadata to ensure we find the correct record even if IDs mismatch.
+    """
+    from app.crud.payments import find_pending_payment, update_payment_status
+
+    # 1. Idempotency check: find the pending record
+    # We look it up by student/course to be safe, then update by its session ID
+    pending = await find_pending_payment(student_id, course_id)
+    if not pending:
+        # If no pending record found, it might already be completed or created externally.
+        # We'll still try to enroll to be safe.
+        logger.warning(
+            "[Webhook] No pending payment found for student=%s course=%s",
+            student_id, course_id
+        )
+    
+    # 2. Update status (if we have a session ID)
+    target_id = stripe_session_id or (pending["stripeSessionId"] if pending else None)
+    if target_id:
+        await update_payment_status(target_id, "completed", studentId=student_id, tenantId=tenant_id)
+
+    # 3. Resolve profile for enrollment (handles tenant context)
+    resolved = await _resolve_student_profile(student_id, tenant_id)
+    if not resolved:
+        logger.error("[Webhook] Could not resolve student profile for enrollment: student=%s", student_id)
+        return
+
+    # 4. Perform enrollment
+    logger.info("[Webhook] Enrolling student %s in course %s", student_id, course_id)
+    enrollment = await course_crud.enroll_student(
+        course_id,
+        resolved["student_id"],
+        resolved["tenant_id"],
+        enforce_same_tenant=False,
+    )
+    
+    if not enrollment.get("success") and enrollment.get("message") != "Already enrolled":
+        logger.error("[Webhook] Enrollment failed: %s", enrollment.get("message"))
+        if target_id:
+            await update_payment_status(target_id, "completed", enrollmentError=enrollment.get("message"))
+
+
 @router.post("/webhook")
 async def stripe_webhook(request: Request):
     """
@@ -183,7 +233,6 @@ async def stripe_webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
 
-    # Verify the webhook signature
     try:
         event = stripe.Webhook.construct_event(
             payload, sig_header, STRIPE_WEBHOOK_SECRET
@@ -193,110 +242,61 @@ async def stripe_webhook(request: Request):
     except stripe.error.SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Handle payment success
-    if event["type"] == "payment_intent.succeeded":
-        intent = event["data"]["object"]
-        intent_id = intent["id"]
-        metadata = intent.get("metadata", {})
+    event_type = event["type"]
+    obj = event["data"]["object"]
+    metadata = obj.get("metadata", {})
 
-        course_id = metadata.get("courseId")
-        student_id = metadata.get("studentId")
-        tenant_id = metadata.get("tenantId")
-
-        # Idempotency: skip if already processed
-        existing = await find_payment_by_session(intent_id)
-        if existing and existing.get("status") == "completed":
-            return {"status": "already processed"}
-
-        # Mark payment as completed
-        await update_payment_status(intent_id, "completed")
-
-        if course_id and student_id:
-            resolved = await _resolve_student_profile(student_id, tenant_id)
-            if resolved:
-                await update_payment_status(
-                    intent_id,
-                    "completed",
-                    studentId=resolved["student_id"],
-                    tenantId=resolved["tenant_id"],
-                )
-                enrollment = await course_crud.enroll_student(
-                    course_id,
-                    resolved["student_id"],
-                    resolved["tenant_id"],
-                    enforce_same_tenant=False,
-                )
-                if not enrollment.get("success") and enrollment.get("message") != "Already enrolled":
-                    await update_payment_status(
-                        intent_id, "completed", enrollmentError=enrollment.get("message")
-                    )
-
-    elif event["type"] == "payment_intent.payment_failed":
-        intent = event["data"]["object"]
-        await update_payment_status(intent["id"], "failed")
-
-    elif event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        metadata = session.get("metadata", {})
+    # ── Handling Course Purchases & Tenant Upgrades ──
+    if event_type == "checkout.session.completed" or event_type == "payment_intent.succeeded":
+        session_type = metadata.get("type")
         
-        # Check if this is a Tenant Upgrade flow
-        if metadata.get("type") == "tenant_upgrade":
+        if session_type == "course_purchase":
+            course_id = metadata.get("courseId")
+            student_id = metadata.get("studentId")
+            tenant_id = metadata.get("tenantId")
+            stripe_id = obj.get("id")
+
+            if course_id and student_id:
+                await _process_successful_payment(course_id, student_id, tenant_id, stripe_id)
+
+        elif session_type == "tenant_upgrade" and event_type == "checkout.session.completed":
             tenant_id = metadata.get("tenantId")
             plan_id = metadata.get("planId")
             if tenant_id and plan_id:
                 from datetime import timedelta
                 now = datetime.utcnow()
                 plan_doc = await db.subscriptionPlans.find_one({"_id": ObjectId(plan_id)})
-                billing_cycle = plan_doc.get("billingCycle", "monthly") if plan_doc else "monthly"
-                if billing_cycle == "yearly":
-                    expiry = now + timedelta(days=365)
-                else:
-                    expiry = now + timedelta(days=30)
-                
-                await db.tenants.update_one(
-                    {"_id": ObjectId(tenant_id)},
-                    {"$set": {
-                        "subscriptionId": ObjectId(plan_id),
-                        "stripeSubscriptionId": session.get("subscription"),
-                        "subscriptionStartDate": now,
-                        "subscriptionExpiryDate": expiry,
-                        "updatedAt": now
-                    }}
-                )
-                
-        # Check if this is a Student Course Purchase flow
-        elif metadata.get("type") == "course_purchase":
-            student_id = metadata.get("studentId")
-            course_id = metadata.get("courseId")
-            tenant_id = metadata.get("tenantId")
-            session_id = session.get("id")
-            if student_id and course_id:
-                resolved_student = await _resolve_student_profile(student_id, tenant_id)
-                if resolved_student:
-                    if session_id:
-                        await update_payment_status(
-                            session_id,
-                            "completed",
-                            studentId=resolved_student["student_id"],
-                            tenantId=resolved_student["tenant_id"],
-                        )
-
-                    enrollment = await course_crud.enroll_student(
-                        course_id,
-                        resolved_student["student_id"],
-                        resolved_student["tenant_id"],
-                        enforce_same_tenant=False,
+                if plan_doc:
+                    billing_cycle = plan_doc.get("billingCycle", "monthly")
+                    expiry = now + timedelta(days=365) if billing_cycle == "yearly" else now + timedelta(days=30)
+                    
+                    await db.tenants.update_one(
+                        {"_id": ObjectId(tenant_id)},
+                        {"$set": {
+                            "subscriptionId": ObjectId(plan_id),
+                            "subscriptionPlan": plan_doc.get("name"),
+                            "subscriptionCategory": plan_doc.get("category", "paid"),
+                            "stripeSubscriptionId": obj.get("subscription"),
+                            "subscriptionStartDate": now,
+                            "subscriptionExpiryDate": expiry,
+                            "updatedAt": now
+                        }}
                     )
-                    if (
-                        session_id
-                        and not enrollment.get("success")
-                        and enrollment.get("message") != "Already enrolled"
-                    ):
-                        await update_payment_status(
-                            session_id,
-                            "completed",
-                            enrollmentError=enrollment.get("message"),
-                        )
+                    
+                    # Record the payment for the admin history
+                    from app.crud.payments import create_payment
+                    await create_payment({
+                        "tenantId": tenant_id,
+                        "paymentType": "subscription",
+                        "amount": obj.get("amount_total", 0) / 100,
+                        "currency": obj.get("currency", "usd"),
+                        "status": "completed",
+                        "stripeSessionId": obj.get("id"),
+                        "metadata": metadata
+                    })
+
+    elif event_type == "payment_intent.payment_failed":
+        await update_payment_status(obj["id"], "failed")
 
     return {"status": "ok"}
 

@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from bson import ObjectId
 from datetime import datetime
+import asyncio
 from dotenv import load_dotenv
 from app.schemas.teachers import TeacherUpdate
 from app.crud import admins as crud_admin
@@ -151,10 +152,25 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
         now = datetime.utcnow()
         billing_cycle = plan.get("billingCycle", "monthly")
         expiry = now + timedelta(days=365) if billing_cycle == "yearly" else now + timedelta(days=30)
+        
+        # FIX: Check if they have an active Stripe subscription and cancel it
+        old_tenant = await db.tenants.find_one({"_id": tenant_id})
+        old_stripe_id = old_tenant.get("stripeSubscriptionId")
+        if old_stripe_id:
+            try:
+                # Cancel the subscription in Stripe so they aren't billed again
+                await asyncio.to_thread(
+                    stripe.Subscription.delete, old_stripe_id
+                )
+                print(f"[Downgrade] Cancelled Stripe subscription: {old_stripe_id}")
+            except Exception as stripe_err:
+                print(f"[Downgrade] Warning: Could not cancel Stripe subscription {old_stripe_id}: {stripe_err}")
+
         await db.tenants.update_one(
             {"_id": tenant_id},
             {"$set": {
                 "subscriptionId": ObjectId(req.planId),
+                "stripeSubscriptionId": None,  # Remove the ID since they are now on free
                 "subscriptionStartDate": now,
                 "subscriptionExpiryDate": expiry,
                 "updatedAt": now
@@ -248,7 +264,10 @@ async def verify_billing_session(req: VerifySessionRequest, current_user=Depends
         # Apply the upgrade
         now = datetime.utcnow()
         plan_doc = await db.subscriptionPlans.find_one({"_id": ObjectId(plan_id)})
-        billing_cycle = plan_doc.get("billingCycle", "monthly") if plan_doc else "monthly"
+        if not plan_doc:
+            return {"success": False, "message": "Subscription plan not found"}
+            
+        billing_cycle = plan_doc.get("billingCycle", "monthly")
         expiry = now + timedelta(days=365) if billing_cycle == "yearly" else now + timedelta(days=30)
 
         stripe_sub_id = session.subscription  # attribute access
@@ -258,6 +277,8 @@ async def verify_billing_session(req: VerifySessionRequest, current_user=Depends
             {"_id": tenant_oid},
             {"$set": {
                 "subscriptionId": ObjectId(plan_id),
+                "subscriptionPlan": plan_doc.get("name"),
+                "subscriptionCategory": plan_doc.get("category", "paid"),
                 "stripeSubscriptionId": stripe_sub_id,
                 "subscriptionStartDate": now,
                 "subscriptionExpiryDate": expiry,
@@ -265,6 +286,18 @@ async def verify_billing_session(req: VerifySessionRequest, current_user=Depends
             }}
         )
         print(f"[verify-session] Update: matched={result.matched_count}, modified={result.modified_count}")
+
+        # Record the payment for the admin history
+        from app.crud.payments import create_payment
+        await create_payment({
+            "tenantId": tenant_id_from_meta,
+            "paymentType": "subscription",
+            "amount": session.amount_total / 100 if session.amount_total else 0,
+            "currency": session.currency or "usd",
+            "status": "completed",
+            "stripeSessionId": session.id,
+            "metadata": dict(metadata) if metadata else {}
+        })
 
         return {"success": True, "message": "Subscription upgraded successfully!"}
     except Exception as e:
