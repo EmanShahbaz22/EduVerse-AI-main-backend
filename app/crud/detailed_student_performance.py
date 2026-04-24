@@ -18,7 +18,13 @@ def _normalize_id(value) -> str | None:
 
 def _format_score_display(score, total: int) -> str:
     if isinstance(score, (int, float)):
-        return f"{score}/{total}"
+        if total > 0:
+            percentage = (score / total) * 100
+            # If the score is already very high (like 100 for a 100-mark quiz), 
+            # this works. If the score was already a percentage, we should check.
+            # However, looking at the CRUD, obtainedMarks is the raw score.
+            return f"{round(percentage)}%"
+        return "0%"
     return str(score)
 
 
@@ -67,23 +73,31 @@ async def get_detailed_student_performance(teacher_id: str, student_id: str, ten
         if user:
             student_name = user.get("fullName", student_name)
 
+    student_oid = ObjectId(student_id)
+    enrolled_courses_oids = [ObjectId(cid) for cid in enrolled_courses if ObjectId.is_valid(cid)]
+    
     quizzes = await quizzes_collection.find(
-        {"courseId": {"$in": list(enrolled_courses)}, "tenantId": tenant_oid}
+        {
+            "courseId": {"$in": enrolled_courses_oids + list(enrolled_courses)}, 
+            "tenantId": tenant_oid
+        }
     ).to_list(length=None)
+
     ai_quizzes = await ai_quiz_sessions_collection.find(
         {
-            "studentId": student_id,
-            "courseId": {"$in": list(enrolled_courses)},
+            "studentId": {"$in": [student_oid, student_id]},
+            "courseId": {"$in": enrolled_courses_oids + list(enrolled_courses)},
         }
     ).to_list(length=None)
 
     quiz_ids = [str(item["_id"]) for item in quizzes] + [str(item["_id"]) for item in ai_quizzes]
+    quiz_oids = [ObjectId(qid) for qid in quiz_ids if ObjectId.is_valid(qid)]
 
     quiz_submissions = await quiz_submissions_collection.find(
         {
-            "studentId": student_id,
-            "courseId": {"$in": list(enrolled_courses)},
-            "quizId": {"$in": quiz_ids},
+            "studentId": {"$in": [student_oid, student_id]},
+            "courseId": {"$in": enrolled_courses_oids + list(enrolled_courses)},
+            "quizId": {"$in": quiz_oids + quiz_ids},
         }
     ).to_list(length=None)
 
