@@ -10,7 +10,9 @@ Endpoints:
     POST /adaptive/generate-quiz         → quiz object with questions array
 """
 
+import asyncio
 import logging
+import traceback as _traceback
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse
 from app.schemas.adaptive_learning import (
@@ -27,11 +29,17 @@ from app.services.lesson_generator import (
     get_latest_classification,
     safe_object_id,
 )
-from app.services.ai_service import RateLimitError
+from app.services.ollama_service import OllamaUnavailableError, OllamaGenerationError
 from app.services.quiz_generator import generate_ai_quiz
 from app.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
+
+# ── Per-lesson concurrency guard ──────────────────────────────────────────────
+# Prevents two simultaneous Ollama calls for the same (student, lesson) pair.
+# Without this, a student opening two tabs (or a page-reload mid-generation)
+# fires two concurrent Ollama requests which OOM-kill the model.
+_base_lesson_locks: dict[str, asyncio.Lock] = {}
 
 router = APIRouter(
     prefix="/adaptive",
@@ -40,18 +48,16 @@ router = APIRouter(
 
 # ── Rate-limit helper ─────────────────────────────────────────────────────────
 
-def _rate_limit_response(context: str) -> JSONResponse:
-    """Return a clean HTTP 503 whenever Gemini quota is hit."""
-    logger.warning("Gemini rate limit hit in: %s", context)
+def _ollama_error_response(context: str) -> JSONResponse:
+    """Return a clean HTTP 503 whenever the local Ollama server is unreachable."""
+    logger.warning("Ollama unavailable in: %s", context)
     return JSONResponse(
-        status_code=429,
-        headers={"Retry-After": "60"},
+        status_code=503,
         content={
             "detail": (
-                "The AI service is temporarily rate-limited (Gemini quota exceeded). "
-                "Please retry in ~60 seconds."
+                "The local AI service (Ollama) is not running. "
+                "Start it with: ollama serve"
             ),
-            "retryAfterSeconds": 60,
         },
     )
 
@@ -207,14 +213,11 @@ async def generate_lesson_endpoint(
 
     except HTTPException:
         raise
-    except RateLimitError:
-        return _rate_limit_response("generate-lesson")
-    except ValueError as e:
-        err_msg = str(e)
-        if "API_KEY" in err_msg or "not set" in err_msg:
-            raise HTTPException(status_code=503, detail=err_msg)
-        logger.error("Configuration or parse error in generate-lesson: %s", err_msg)
-        raise HTTPException(status_code=500, detail=f"Generation failed: {err_msg}")
+    except OllamaUnavailableError:
+        return _ollama_error_response("generate-lesson")
+    except OllamaGenerationError as e:
+        logger.error("Ollama generation error in generate-lesson: %s", e)
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
     except Exception as e:
         logger.error("Lesson generation failed: %s", str(e))
         raise HTTPException(status_code=500, detail=f"Lesson generation failed: {str(e)}")
@@ -233,20 +236,32 @@ async def generate_base_lesson_endpoint(
 ):
     tenant_id: str | None = current_user.get("tenant_id")
 
-    try:
-        s_oid = safe_object_id(student_id)
-        if not s_oid:
-            raise HTTPException(status_code=400, detail="Invalid student_id format")
+    # ── Concurrency guard ────────────────────────────────────────────────────
+    # One asyncio Lock per (student_id, lesson_id) pair ensures that if the
+    # frontend fires two simultaneous requests (two tabs, page reload during
+    # generation) only ONE Ollama call runs; the second waits and then serves
+    # the cached result from MongoDB instead of starting another LLM call.
+    lesson_id_for_lock = request.lessonId or "unknown"
+    lock_key = f"{student_id}:{lesson_id_for_lock}"
+    if lock_key not in _base_lesson_locks:
+        _base_lesson_locks[lock_key] = asyncio.Lock()
+    lock = _base_lesson_locks[lock_key]
 
-        result = await generate_base_lesson_for_student(
-            student_id=student_id,
-            course_id=request.courseId,
-            lesson_id=request.lessonId,
-            topic=request.topic,
-            source_content=request.sourceContent,
-            tenant_id=tenant_id,
-            force=force,
-        )
+    try:
+        async with lock:
+            s_oid = safe_object_id(student_id)
+            if not s_oid:
+                raise HTTPException(status_code=400, detail="Invalid student_id format")
+
+            result = await generate_base_lesson_for_student(
+                student_id=student_id,
+                course_id=request.courseId,
+                lesson_id=request.lessonId,
+                topic=request.topic,
+                source_content=request.sourceContent,
+                tenant_id=tenant_id,
+                force=force,
+            )
 
         lesson = result.get("lesson", {})
         return {
@@ -268,17 +283,17 @@ async def generate_base_lesson_endpoint(
         }
     except HTTPException:
         raise
-    except RateLimitError:
-        return _rate_limit_response("generate-base-lesson")
-    except ValueError as e:
-        err_msg = str(e)
-        if "API_KEY" in err_msg or "not set" in err_msg:
-            raise HTTPException(status_code=503, detail=err_msg)
-        logger.error("Configuration or parse error in generate-base-lesson: %s", err_msg)
-        raise HTTPException(status_code=500, detail=f"Generation failed: {err_msg}")
+    except OllamaUnavailableError:
+        return _ollama_error_response("generate-base-lesson")
+    except OllamaGenerationError as e:
+        logger.error("Ollama generation error in generate-base-lesson: %s", e)
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
     except Exception as e:
-        logger.error("Base lesson generation failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=f"Base lesson generation failed: {str(e)}")
+        logger.error(
+            "Base lesson generation failed: %s\n%s",
+            str(e), _traceback.format_exc()
+        )
+        raise HTTPException(status_code=500, detail=f"Base lesson generation failed: {str(e) or type(e).__name__}")
 
 
 # ──────────────────────────────────────────────
@@ -382,15 +397,134 @@ async def generate_quiz_endpoint(
         if "_id" in quiz:
             quiz["_id"] = str(quiz["_id"])
         return quiz
-    except RateLimitError:
-        return _rate_limit_response("generate-quiz")
-    except ValueError as e:
-        err_msg = str(e)
-        if "API_KEY" in err_msg or "not set" in err_msg:
-            raise HTTPException(status_code=503, detail=err_msg)
-        raise HTTPException(status_code=500, detail=f"Quiz generation failed: {err_msg}")
+    except OllamaUnavailableError:
+        return _ollama_error_response("generate-quiz")
+    except OllamaGenerationError as e:
+        raise HTTPException(status_code=500, detail=f"Quiz generation failed: {e}")
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
         logger.error("Quiz generation failed: %s\n%s", str(e), error_trace)
         raise HTTPException(status_code=500, detail=f"Quiz generation failed: {str(e)}")
+
+
+# ── POST /adaptive/generate (Spec-required endpoint) ──────────────────────────
+# Runs: generate_content_with_rag → Layer1 → Layer2 → saves to DB → returns all scores.
+
+from pydantic import BaseModel as _BaseModel
+
+class AdaptiveGenerateRequest(_BaseModel):
+    topic:         str
+    task_type:     str = "lesson"   # lesson | mcq | tutor
+    student_level: str = "intermediate"
+    tenant_id:     str = ""
+    course_id:     str = ""
+    lesson_id:     str = ""
+    student_id:    str = ""
+
+
+@router.post(
+    "/generate",
+    summary="RAG-grounded generation + L1+L2 validation pipeline",
+    description=(
+        "Generates AI content via RAG, runs Layer1 (ROUGE/BERT/structure) and "
+        "Layer2 (cosine grounding) validation, saves to DB, returns scores."
+    ),
+)
+async def adaptive_generate(
+    request: AdaptiveGenerateRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Full spec pipeline:
+    1. Read active_worker_model from db.config
+    2. generate_content_with_rag()
+    3. Layer 1 validation
+    4. Layer 2 RAG validation
+    5. Calculate final score
+    6. Save to db.validation_results
+    7. Return content + all scores
+    """
+    import time as _time
+    from app.services.rag_service import generate_content_with_rag, retrieve_chunks
+    from app.services.layer1_validation import check_layer1
+    from app.services.rag_validator import check_layer2
+    from app.services.ollama_service import get_active_model
+    from app.db.database import validation_results_collection
+    from datetime import datetime, timezone
+
+    tenant_id = request.tenant_id or current_user.get("tenant_id", "")
+    t_start = _time.time()
+
+    try:
+        # 1. Active model
+        active_model = await get_active_model()
+
+        # 2. Generate content with RAG
+        gen_result = await generate_content_with_rag(
+            topic=request.topic,
+            task_type=request.task_type,
+            student_level=request.student_level,
+            tenant_id=tenant_id,
+            course_id=request.course_id,
+            lesson_id=request.lesson_id,
+            active_model_name=active_model,
+        )
+        ai_content       = gen_result.get("content", "")
+        source_documents = gen_result.get("source_documents", [])
+
+        # 3. Layer 1
+        layer1 = check_layer1(ai_content, request.topic, request.task_type)  # type: ignore
+
+        # 4. Layer 2 RAG grounding
+        reference_chunks = retrieve_chunks(
+            request.topic, tenant_id, request.course_id, request.lesson_id or None
+        )
+        layer2 = check_layer2(ai_content, reference_chunks)
+
+        # 5. Final score
+        final_score = layer1["layer1_total"] + layer2["layer2_pts"]
+        if final_score >= 75:
+            final_verdict = "PASS"
+        elif final_score >= 50:
+            final_verdict = "REVIEW"
+        else:
+            final_verdict = "FAIL"
+
+        latency_ms = int((_time.time() - t_start) * 1000)
+
+        # 6. Save to MongoDB
+        await validation_results_collection.insert_one({
+            "worker_model":   active_model,
+            "task_type":      request.task_type,
+            "topic":          request.topic,
+            "student_level":  request.student_level,
+            "student_id":     request.student_id,
+            "tenant_id":      tenant_id,
+            "course_id":      request.course_id,
+            "lesson_id":      request.lesson_id,
+            "layer1":         layer1,
+            "layer2_rag":     layer2,
+            "final_score":    final_score,
+            "final_verdict":  final_verdict,
+            "latency_ms":     latency_ms,
+            "timestamp":      datetime.now(timezone.utc).isoformat(),
+        })
+
+        # 7. Return
+        return {
+            "content":       ai_content,
+            "final_score":   final_score,
+            "final_verdict": final_verdict,
+            "layer1":        layer1,
+            "layer2_rag":    layer2,
+            "worker_model":  active_model,
+            "latency_ms":    latency_ms,
+        }
+
+    except OllamaUnavailableError:
+        return _ollama_error_response("adaptive/generate")
+    except Exception as e:
+        logger.error("adaptive/generate failed: %s", str(e))
+        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+

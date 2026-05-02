@@ -72,6 +72,12 @@ student_classifications_collection = db["studentClassifications"]
 ai_quiz_sessions_collection        = db["aiQuizSessions"]
 ai_chat_history_collection         = db["aiChatHistory"]
 
+# ── RAG / Local LLM pipeline collections ──
+config_collection             = db["config"]            # active_worker_model setting
+reference_uploads_collection  = db["referenceUploads"]  # teacher file upload records
+validation_results_collection = db["validationResults"] # per-generation audit scores
+benchmark_results_collection  = db["benchmarkResults"]  # SA benchmark comparison runs
+
 
 # ── Backward Compatibility Accessors ──
 # Some older parts of the app still use these function calls.
@@ -192,6 +198,28 @@ async def ensure_indexes() -> None:
     await ai_chat_history_collection.create_index(
         [("studentId", ASCENDING), ("courseId", ASCENDING)],
         name="ai_chat_history_student_course_idx",
+    )
+
+    # ── RAG / Local LLM Pipeline indexes ──
+
+    # referenceUploads: look up by course + lesson for RAG context retrieval
+    await reference_uploads_collection.create_index(
+        [("course_id", ASCENDING), ("lesson_id", ASCENDING)],
+        name="ref_uploads_course_lesson_idx",
+    )
+    await reference_uploads_collection.create_index(
+        [("tenant_id", ASCENDING), ("uploaded_by", ASCENDING)],
+        name="ref_uploads_tenant_teacher_idx",
+    )
+
+    # validationResults: filter by model + verdict for SA dashboard
+    await validation_results_collection.create_index(
+        [("worker_model", ASCENDING), ("final_verdict", ASCENDING)],
+        name="validation_results_model_verdict_idx",
+    )
+    await validation_results_collection.create_index(
+        [("tenant_id", ASCENDING), ("timestamp", ASCENDING)],
+        name="validation_results_tenant_time_idx",
     )
 
     logger.info("All MongoDB indexes verified/created successfully.")

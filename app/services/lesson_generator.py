@@ -24,7 +24,7 @@ from bson import ObjectId
 from typing import Optional
 
 from app.services.student_classifier import classify_student
-from app.services.ai_service import generate_lesson, generate_base_lesson
+from app.services.ollama_service import generate_lesson, generate_base_lesson
 from app.db.database import db
 from bson.errors import InvalidId
 
@@ -123,14 +123,18 @@ async def generate_lesson_for_student(
         existing_lesson = await db.aiGeneratedLessons.find_one(duplicate_query)
 
     if existing_lesson:
-        # FIX: If the existing lesson has no content, it's a previous failed/incomplete
-        # generation. Delete the orphan record and fall through to regenerate.
-        has_content = bool((existing_lesson.get("content") or "").strip())
+        # FIX: If the existing lesson has no real content (empty, the
+        # "Content unavailable." fallback, or a raw JSON dump starting with
+        # '{'), treat it as an orphan from a failed generation and delete it.
+        _BAD_CONTENT_MARKERS = {"", "content unavailable.", "content unavailable"}
+        raw_content = (existing_lesson.get("content") or "").strip()
+        is_json_dump = raw_content.startswith('{')
+        has_content = raw_content.lower() not in _BAD_CONTENT_MARKERS and not is_json_dump
         if not has_content:
             logger.warning(
-                "Found orphan lesson (no content) for student=%s quiz=%s — "
+                "Found orphan lesson (bad/empty content=%r) for student=%s quiz=%s — "
                 "previous generation likely failed. Deleting and regenerating.",
-                student_id, quiz_id,
+                raw_content[:60], student_id, quiz_id,
             )
             await db.aiGeneratedLessons.delete_one({"_id": existing_lesson["_id"]})
             existing_lesson = None
@@ -191,7 +195,7 @@ async def generate_lesson_for_student(
     # ── Step 2: Generate AI lesson ──
     # Done BEFORE saving to DB — if the AI call fails, no orphan records are left.
     logger.info(
-        "Step 2: Calling Gemini for pace='%s' topic='%s'",
+        "Step 2: Calling Ollama (local LLM) for pace='%s' topic='%s'",
         classification["pace"], topic,
     )
 
@@ -206,10 +210,9 @@ async def generate_lesson_for_student(
             weak_areas=weak_areas,
         )
     except Exception as e:
-        # FIX: Log the actual error message so you can diagnose quota vs key vs parse issues.
-        # Old code just said "AI lesson generation failed" with no detail.
+        # Log the actual error message so you can diagnose model vs parse issues.
         logger.error(
-            "Step 2 FAILED — Gemini call unsuccessful. No DB changes made. "
+            "Step 2 FAILED — Ollama call unsuccessful. No DB changes made. "
             "Reason: %s", str(e),
         )
         raise
@@ -313,8 +316,8 @@ async def generate_base_lesson_for_student(
 
     if force:
         logger.warning(
-            "QUOTA WARNING: force=True - base lesson duplicate guard skipped for "
-            "student=%s lesson=%s. A new Gemini API call WILL be made.",
+            "force=True - base lesson duplicate guard skipped for "
+            "student=%s lesson=%s. A new Ollama call WILL be made.",
             student_id, lesson_id,
         )
 
@@ -327,6 +330,22 @@ async def generate_base_lesson_for_student(
             "generationType": "base",
         }
         existing_lesson = await db.aiGeneratedLessons.find_one(duplicate_query)
+
+    if existing_lesson:
+        # Also purge base lessons saved with bad content (empty, fallback
+        # string, or raw JSON dump starting with '{').
+        _BAD_CONTENT_MARKERS = {"", "content unavailable.", "content unavailable"}
+        raw_content = (existing_lesson.get("content") or "").strip()
+        is_json_dump = raw_content.startswith('{')
+        has_content = raw_content.lower() not in _BAD_CONTENT_MARKERS and not is_json_dump
+        if not has_content:
+            logger.warning(
+                "Found orphan base lesson (bad/empty content=%r) for student=%s lesson=%s — "
+                "Deleting and regenerating.",
+                raw_content[:60], student_id, lesson_id,
+            )
+            await db.aiGeneratedLessons.delete_one({"_id": existing_lesson["_id"]})
+            existing_lesson = None
 
     if existing_lesson:
         logger.info(

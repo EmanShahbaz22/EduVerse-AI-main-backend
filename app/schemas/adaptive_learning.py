@@ -153,7 +153,7 @@ class AIQuizResponse(BaseModel):
     lessonId: Optional[str] = None
     topic: str
     questions: List[QuizQuestion]
-    generatedAt: str
+    generatedAt: Optional[str] = None
 
 
 # ──────────────────────────────────────────────

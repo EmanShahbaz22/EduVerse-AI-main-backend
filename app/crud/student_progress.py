@@ -125,14 +125,31 @@ class ProgressCRUD:
         from app.crud.student_performance import StudentPerformanceCRUD
         import asyncio
         from app.services.quiz_generator import generate_ai_quiz
+        from app.db.database import ai_quiz_sessions_collection
 
         student_doc = await db.students.find_one({"userId": ObjectId(student_id)})
         if student_doc:
             internal_student_id = str(student_doc["_id"])
 
-            # Only fire AI generation if this lesson wasn't already completed.
-            # This prevents duplicate quiz tasks on frontend retries.
-            if not already_completed_this_lesson:
+            # Check if a VALID quiz already exists for this lesson+student.
+            # A "valid" quiz has at least 1 question — 0-question records are
+            # artefacts of failed Ollama generations and should be regenerated.
+            existing_valid_quiz = await ai_quiz_sessions_collection.find_one({
+                "studentId": internal_student_id,
+                "lessonId": lesson_id,
+                "questions": {"$exists": True, "$not": {"$size": 0}},
+            }) if lesson_id else None
+
+            # Allow generation when:
+            #   - Lesson was just completed for the first time, OR
+            #   - Lesson was already completed but the previous quiz generation
+            #     failed and left no valid quiz in the DB.
+            should_generate_quiz = (
+                not already_completed_this_lesson
+                or (already_completed_this_lesson and not existing_valid_quiz)
+            )
+
+            if should_generate_quiz:
                 async def background_adaptive_pipeline():
                     import logging as _logging
                     _log = _logging.getLogger(__name__)
