@@ -554,7 +554,7 @@ Required JSON format:
     # Call active worker LLM via Ollama
     import httpx
     try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=900.0, write=30.0, pool=5.0)) as client:
             response = await client.post(
                 "http://localhost:11434/api/generate",
                 json={
@@ -589,6 +589,7 @@ Required JSON format:
             ),
         )
     except Exception as exc:
+        logger.error("[GenerateCourseLessons] Ollama call failed: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"AI generation request failed: {exc}",
@@ -610,11 +611,17 @@ Required JSON format:
         lessons = json.loads(clean.strip())
         if not isinstance(lessons, list):
             raise ValueError("Expected a JSON array of lessons")
-    except Exception:
+    except Exception as parse_exc:
+        raw_preview = (raw_output or "")[:400]
+        logger.error(
+            "[GenerateCourseLessons] JSON parse failed. parse_error=%s | raw_preview=%r",
+            parse_exc, raw_preview,
+        )
         raise HTTPException(
             status_code=500,
             detail=(
                 "AI failed to return a valid lesson structure. "
+                f"Model output preview: {raw_preview!r}. "
                 "Please try again."
             ),
         )
@@ -638,22 +645,36 @@ Required JSON format:
     final_score   = validation["final_score"]
     final_verdict = validation["final_verdict"]
 
-    # FAIL verdict — do not return lessons
-    if final_verdict == "FAIL":
+    # For a teacher-facing lesson PLAN (titles + objectives + key concepts),
+    # ROUGE always scores near 0 because plan language is abstracted from source.
+    # Validation is advisory here — only block on critically low scores (< 10)
+    # which indicate the model returned gibberish/empty content.
+    if final_score < 10:
+        logger.warning(
+            "[GenerateCourseLessons] Critically low validation score=%s for course=%s — blocking",
+            final_score, request.course_id,
+        )
         raise HTTPException(
             status_code=422,
             detail={
-                "message":        "Generated lessons did not pass quality validation. Please try again.",
-                "final_score":    final_score,
-                "final_verdict":  final_verdict,
+                "message": "AI generated unusable content. Please try again.",
+                "final_score": final_score,
+                "final_verdict": final_verdict,
             },
+        )
+
+    if final_verdict == "FAIL":
+        logger.info(
+            "[GenerateCourseLessons] Validation advisory FAIL (score=%s) for course=%s "
+            "— returning lessons anyway (teacher-side tool, plan language scores low on ROUGE by design)",
+            final_score, request.course_id,
         )
 
     return {
         "lessons":        lessons,
         "lesson_count":   len(lessons),
         "final_score":    final_score,
-        "final_verdict":  final_verdict,
+        "final_verdict":  final_verdict if final_score >= 10 else "REVIEW",
         "worker_model":   active_model,
         "course_id":      request.course_id,
         "tenant_id":      tenant_id,

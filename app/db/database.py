@@ -42,14 +42,23 @@ if not MONGO_URI:
         "Add it to your .env file: MONGO_URI=mongodb+srv://..."
     )
 
-# ── FIX 2: Connection timeouts ──
-# Default timeouts are 30s — a dead DB makes every request hang.
-# serverSelectionTimeoutMS: how long to wait to find a usable server.
-# connectTimeoutMS: how long to wait for a single connection to open.
+# ── FIX 2: Connection timeouts + keep-alive ──
+# heartbeatFrequencyMS: Motor pings Atlas every 5s to keep the connection alive
+#   during long Ollama benchmark runs (8+ minutes). Without this, Atlas drops
+#   the connection after ~10 min of silence and the next DB call gets AutoReconnect.
+# socketTimeoutMS=0: disables per-socket read timeout so long operations
+#   (e.g. saving benchmark results after a 456s Ollama call) don't fail mid-write.
+# maxIdleTimeMS=600000: connections can sit idle in the pool for 10 min before
+#   being closed — matches the longest expected benchmark duration.
 client = AsyncIOMotorClient(
     MONGO_URI,
     serverSelectionTimeoutMS=30000,   # fail fast if DB is unreachable (30s)
     connectTimeoutMS=30000,
+    heartbeatFrequencyMS=5000,         # ping every 5s — keeps Atlas from dropping idle connections
+    socketTimeoutMS=0,                 # no per-socket timeout — long writes must complete
+    maxIdleTimeMS=600000,              # keep pool connections alive for 10 min
+    retryReads=True,                  # auto-retry idempotent reads on AutoReconnect
+    retryWrites=True,                 # auto-retry idempotent writes on AutoReconnect
 )
 db = client["LMS"]
 

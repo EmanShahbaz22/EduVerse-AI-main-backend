@@ -1,5 +1,6 @@
 from bson import ObjectId
 from fastapi import Depends, HTTPException, Request, status
+import pymongo.errors
 
 from app.auth.router import oauth2_scheme
 from app.db.database import db
@@ -32,7 +33,16 @@ async def get_current_user(
     if not user_id or not ObjectId.is_valid(user_id):
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    # Retry once on AutoReconnect — Atlas may have dropped the idle connection
+    # during a long Ollama benchmark run (8+ min). Motor's heartbeat should keep
+    # it alive, but if it does drop, one retry is enough to reconnect.
+    try:
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+    except pymongo.errors.AutoReconnect:
+        try:
+            user = await db.users.find_one({"_id": ObjectId(user_id)})
+        except Exception:
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable. Please retry.")
     if not user or not is_auth_status_allowed(user.get("status")):
         raise HTTPException(status_code=401, detail="User not found or inactive")
 

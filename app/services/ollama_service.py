@@ -433,31 +433,54 @@ Start your response immediately with ## Introduction (no preamble).
 """
 
 _QUIZ_PROMPT = """\
-You are an expert MCQ quiz creator. Generate a quiz on the given topic.
+You are an expert MCQ quiz creator for an educational platform.
 
 Topic: {topic}
 Difficulty: {difficulty}
 Number of Questions: {count}
 
-Rules:
-- Each question must have exactly 4 options.
-- Only one option is correct.
-- Vary question styles: factual, conceptual, application.
-- Return ONLY valid JSON in this exact format:
+CRITICAL RULES:
+1. Each question MUST have exactly 4 answer options with REAL answer text (not letters like "A", "B", "C", "D").
+2. Each option must be a complete, meaningful answer relevant to the question.
+3. Only ONE option is correct.
+4. The correct_answer field must be the EXACT text of the correct option (not a letter).
+5. Vary question styles: factual recall, conceptual understanding, application/code.
+6. Return ONLY valid JSON, no extra text.
+
+EXAMPLE of correct format (on topic "Python Variables"):
 {{
-  "title": "Quiz: {topic}",
-  "topic": "{topic}",
-  "difficulty": "{difficulty}",
+  "title": "Quiz: Python Variables",
+  "topic": "Python Variables",
+  "difficulty": "medium",
   "questions": [
     {{
-      "question": "string",
-      "options": ["A", "B", "C", "D"],
-      "correct_answer": "A",
-      "explanation": "Why A is correct"
+      "question": "What is the correct way to declare a variable in Python?",
+      "options": [
+        "int x = 5",
+        "x = 5",
+        "var x = 5",
+        "declare x = 5"
+      ],
+      "correct_answer": "x = 5",
+      "explanation": "Python uses dynamic typing. Variables are created by simple assignment with no type keyword."
+    }},
+    {{
+      "question": "Which of the following is a valid Python variable name?",
+      "options": [
+        "2myvar",
+        "my-var",
+        "my_var",
+        "my var"
+      ],
+      "correct_answer": "my_var",
+      "explanation": "Variable names cannot start with a digit, contain hyphens, or have spaces. Underscores are allowed."
     }}
   ]
 }}
-Do NOT include any text outside the JSON block.
+
+Now generate a {count}-question quiz on the topic "{topic}" at {difficulty} difficulty level.
+Follow the EXACT same JSON format as the example above.
+Each option must be a full answer phrase, never a single letter.
 """
 
 _TUTOR_PROMPT = """\
