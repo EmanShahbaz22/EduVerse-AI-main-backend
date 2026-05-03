@@ -109,8 +109,15 @@ async def run_teacher_perf_pipeline(teacher_id: str, tenant_id: str):
         from app.crud.grade_calculator import calculate_grade
         
         # 1. Get all potential points per course
-        quizzes = await quizzes_collection.find({"courseId": {"$in": course_ids}, "tenantId": toid}).to_list(None)
-        ai_quizzes = await ai_quiz_sessions_collection.find({"courseId": {"$in": course_ids}}).to_list(None)
+        course_oids = [ObjectId(cid) for cid in course_ids if ObjectId.is_valid(cid)]
+        
+        quizzes = await quizzes_collection.find(
+            {"courseId": {"$in": course_oids + course_ids}, "tenantId": toid}
+        ).to_list(None)
+        
+        ai_quizzes = await ai_quiz_sessions_collection.find(
+            {"courseId": {"$in": course_oids + course_ids}}
+        ).to_list(None)
         
         course_totals = {}
         ai_totals = {}
@@ -130,9 +137,15 @@ async def run_teacher_perf_pipeline(teacher_id: str, tenant_id: str):
             
         # 2. Extract student IDs efficiently
         student_ids = list(set([str(r["studentId"]) for r in raw_results]))
+        student_oids = [ObjectId(sid) for sid in student_ids if ObjectId.is_valid(sid)]
         
         # 3. Fetch submissions
-        q_subs = await quiz_submissions_collection.find({"courseId": {"$in": course_ids}, "studentId": {"$in": student_ids}}).to_list(None)
+        q_subs = await quiz_submissions_collection.find(
+            {
+                "courseId": {"$in": course_oids + course_ids}, 
+                "studentId": {"$in": student_oids + student_ids}
+            }
+        ).to_list(None)
         
         # map: (courseId, studentId) -> earned_score
         earned_map = {}
@@ -155,6 +168,7 @@ async def run_teacher_perf_pipeline(teacher_id: str, tenant_id: str):
             r["marks"] = earned
             r["totalMarks"] = total_possible
             r["grade"] = calculate_grade(earned, total_possible)
+            r["progress"] = (earned / total_possible * 100) if total_possible > 0 else 0
             
         return raw_results
     except Exception:
