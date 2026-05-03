@@ -377,7 +377,7 @@ async def generate_base_lesson_for_student(
     )
     lesson_data = await generate_base_lesson(
         topic=topic,
-        source_content=clean_source_content[:5000],
+        source_content=clean_source_content[:15000],  # up from 5000 — feed full teacher notes
     )
 
     lesson_db_doc = {

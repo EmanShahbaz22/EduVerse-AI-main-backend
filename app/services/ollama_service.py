@@ -128,7 +128,7 @@ async def _call_ollama(
         payload["format"] = "json"  # Ollama native JSON mode
 
     try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
+        async with httpx.AsyncClient(timeout=900.0) as client:
             resp = await client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload)
             resp.raise_for_status()
             data = resp.json()
@@ -370,8 +370,9 @@ def _apply_defaults(parsed: dict) -> dict:
 
 # ── Prompt templates ──────────────────────────────────────────────────────────
 
-_LESSON_PROMPT = """\
-You are an expert educational content creator. Generate a highly detailed, comprehensive, and engaging lesson.
+# ── Adaptive lesson ── (plain Markdown pass; JSON assembled in Python)
+_LESSON_MARKDOWN_PROMPT = """\
+ You are an expert educational content creator writing a comprehensive student lesson.
 
 Student Learning Pace: {pace}
 Course Topic: {topic}
@@ -379,73 +380,56 @@ Quiz Score: {score}%
 Weak Areas: {weak_areas}
 
 Pace instructions:
-- slow: use very simple language, lots of analogies, step-by-step walkthroughs, and real-world examples.
-- average: provide clear explanations, moderate examples, and practice problems with solutions.
-- fast: be concise but thorough, dive into advanced concepts, deeper insights, and challenging exercises.
+- slow: use very simple language, many analogies, step-by-step walkthroughs, relatable real-world examples, and gentle encouragement.
+- average: clear explanations, moderate examples, practice problems with step-by-step solutions.
+- fast: concise but thorough, advanced concepts, deeper insights, and challenging extension exercises.
 
-Focus heavily on the student's weak areas and ensure deep, comprehensive coverage of the topic.
+Your task: Write the FULL, complete lesson body as rich Markdown prose. 
+Focus on the student's weak areas and ensure comprehensive, deep coverage.
 
-CRITICAL CONTENT REQUIREMENTS — YOU MUST FOLLOW ALL OF THESE STRICTLY:
-1. Length: You MUST write a very long, detailed lesson in the "content" field (minimum 1000 words). Do NOT write a brief summary.
-2. Structure: You MUST use Markdown formatting with exactly these 4 headings: 
+STRICT REQUIREMENTS:
+1. Minimum length: 1200 words of actual lesson content — NO shortcuts, NO summaries.
+2. Use exactly these four Markdown headings (## level):
    ## Introduction
    ## Core Concepts
    ## Worked Examples
    ## Key Takeaways
-3. Detail: Each section MUST have at least 3 detailed paragraphs and bullet points.
-4. Examples: You MUST include at least 3 fully worked examples with step-by-step code or solutions.
-5. Completeness: Do NOT stop early. Do NOT summarize. Write out the full lesson text explicitly.
+3. Each section must have at least 4 detailed paragraphs PLUS relevant bullet points or numbered lists.
+4. Include at least 4 fully worked examples with step-by-step explanations or code snippets (use ```python fences for code).
+5. Write in flowing, educational prose — NOT bullet-only lists.
+6. Do NOT include any JSON, XML, or metadata. Output only raw Markdown.
+7. Do NOT stop mid-sentence. Complete every section fully before ending.
 
-You MUST respond with ONLY a raw JSON object. Do not include markdown fences around the JSON.
-The JSON object MUST start with {{ and end with }}. Fill in every field.
-
-JSON format:
-{{
-  "title": "A catchy title for the lesson",
-  "difficulty": "beginner/intermediate/advanced",
-  "estimated_duration_minutes": 20,
-  "key_concepts": ["concept1", "concept2", "concept3", "concept4"],
-  "summary": "A 2-3 sentence brief summary of the lesson.",
-  "content": "## Introduction\\n\\n(Write at least 3 paragraphs here...)\\n\\n## Core Concepts\\n\\n(Write deep explanations here...)\\n\\n## Worked Examples\\n\\n(Provide 3 detailed examples here...)\\n\\n## Key Takeaways\\n\\n(Summarize the main points...)"
-}}
+Start your response immediately with ## Introduction (no preamble).
 """
 
-_BASE_LESSON_PROMPT = """\
-You are an expert educational content creator.
-Expand the teacher's lesson notes into a highly detailed, comprehensive, polished, student-facing lesson.
+# ── Base lesson ── (plain Markdown pass; JSON assembled in Python)
+_BASE_LESSON_MARKDOWN_PROMPT = """\
+You are an expert educational content creator. Expand the teacher's lesson notes into a polished, student-facing lesson.
 
 Lesson Topic: {topic}
+
 Teacher Notes:
 {source_content}
 
-Instructions:
-- Do not assume any quiz result or student pace.
-- Preserve the teacher's intended topic and scope.
-- Expand the brief notes into clear, engaging, and deeply detailed content.
+Your task: Write the FULL, complete lesson body as rich Markdown prose that a student will read directly.
+Do not mention quiz results or student pace — this is the introductory lesson.
 
-CRITICAL CONTENT REQUIREMENTS — YOU MUST FOLLOW ALL OF THESE STRICTLY:
-1. Length: You MUST write a very long, detailed lesson in the "content" field (minimum 1000 words). Do NOT write a brief summary.
-2. Structure: You MUST use Markdown formatting with exactly these 4 headings:
+STRICT REQUIREMENTS:
+1. Minimum length: 1200 words of actual lesson content — NO shortcuts, NO summaries.
+2. Use exactly these four Markdown headings (## level):
    ## Introduction
    ## Core Concepts
    ## Examples & Illustrations
    ## Summary
-3. Detail: Each section MUST have at least 3 detailed paragraphs and bullet points.
-4. Examples: You MUST include at least 3 concrete examples or case studies.
-5. Completeness: Do NOT stop early. Do NOT summarize. Write out the full lesson text explicitly.
+3. Each section must have at least 4 detailed paragraphs PLUS relevant bullet points or numbered lists.
+4. Include at least 4 concrete, worked examples or in-depth case studies (use ```python fences for code).
+5. Preserve the teacher's intended topic and scope but greatly expand the detail.
+6. Write in flowing, educational prose — NOT bullet-only lists.
+7. Do NOT include any JSON, XML, or metadata. Output only raw Markdown.
+8. Do NOT stop mid-sentence. Complete every section fully before ending.
 
-You MUST respond with ONLY a raw JSON object. Do not include markdown fences around the JSON.
-The JSON object MUST start with {{ and end with }}. Fill in every field.
-
-JSON format:
-{{
-  "title": "A catchy title for the lesson",
-  "difficulty": "beginner/intermediate/advanced",
-  "estimated_duration_minutes": 20,
-  "key_concepts": ["concept1", "concept2", "concept3", "concept4"],
-  "summary": "A 2-3 sentence brief summary of the lesson.",
-  "content": "## Introduction\\n\\n(Write at least 3 paragraphs here...)\\n\\n## Core Concepts\\n\\n(Write deep explanations here...)\\n\\n## Examples & Illustrations\\n\\n(Provide 3 detailed examples here...)\\n\\n## Summary\\n\\n(Summarize the main points...)"
-}}
+Start your response immediately with ## Introduction (no preamble).
 """
 
 _QUIZ_PROMPT = """\
@@ -493,42 +477,82 @@ Rules:
 
 # ── Public API (drop-in replacement for ai_service.py) ────────────────────────
 
+def _extract_title_from_markdown(md: str) -> str:
+    """Pull the first H1 or H2 heading from markdown as the lesson title."""
+    for line in md.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('# '):
+            return stripped[2:].strip()
+        if stripped.startswith('## '):
+            return stripped[3:].strip()
+    return "AI Generated Lesson"
+
+
+def _build_lesson_dict_from_markdown(
+    md_content: str,
+    pace: str = "average",
+    duration: int = 20,
+) -> dict:
+    """
+    Wrap a raw Markdown lesson body into the same dict schema that the
+    JSON-based prompts used to return. This avoids all JSON truncation issues.
+    """
+    content = md_content.strip()
+    title = _extract_title_from_markdown(content)
+
+    # Extract key concepts from headings (## level)
+    headings = [line.strip()[3:].strip() for line in content.splitlines() if line.strip().startswith('## ')]
+
+    # Rough duration estimate: ~200 words per minute reading speed
+    word_count = len(content.split())
+    estimated_duration = max(10, round(word_count / 200))
+
+    return {
+        "title": title,
+        "content": content,
+        "difficulty": "intermediate" if pace == "average" else ("beginner" if pace == "slow" else "advanced"),
+        "estimated_duration_minutes": estimated_duration,
+        "key_concepts": headings[:6],
+        "summary": f"A comprehensive lesson covering {title}.",
+    }
+
+
 async def generate_lesson(pace: str, topic: str, score: float, weak_areas: str, model_override: str | None = None) -> dict:
     """
     Generate a personalized adaptive lesson using the active worker model.
-    Drop-in replacement for ai_service.generate_lesson().
-    Pass model_override to force a specific model (e.g. during benchmarking).
+    Uses a plain-Markdown prompt (no JSON-mode) to avoid token-budget truncation.
     """
     model = model_override if model_override else await get_active_model()
     logger.info("Generating adaptive lesson: model=%s pace=%s topic=%s score=%.1f", model, pace, topic, score)
 
-    prompt = _LESSON_PROMPT.format(
+    prompt = _LESSON_MARKDOWN_PROMPT.format(
         pace=pace, topic=topic, score=score, weak_areas=weak_areas or "general review"
     )
     t0 = time.time()
-    raw = await _call_ollama(prompt, model=model)
+    # Plain text — no force_json — so the model can write freely without JSON token overhead.
+    # 4096 tokens ≈ 3000 words; comfortably finishes within the 15-min timeout on slow hardware.
+    raw = await _call_ollama(prompt, model=model, num_predict=4096, force_json=False)
     elapsed = int((time.time() - t0) * 1000)
-    logger.info("Lesson generated in %dms", elapsed)
+    logger.info("Lesson generated in %dms  words≈%d", elapsed, len(raw.split()))
 
-    parsed = _parse_json_response(raw, ["title", "content"])
-    return parsed
+    return _build_lesson_dict_from_markdown(raw, pace=pace)
 
 
 async def generate_base_lesson(topic: str, source_content: str) -> dict:
     """
     Generate the first/base lesson from teacher-authored notes.
-    Drop-in replacement for ai_service.generate_base_lesson().
+    Uses a plain-Markdown prompt to avoid JSON truncation.
     """
     model = await get_active_model()
     logger.info("Generating base lesson: model=%s topic=%s", model, topic)
 
-    prompt = _BASE_LESSON_PROMPT.format(topic=topic, source_content=source_content)
+    prompt = _BASE_LESSON_MARKDOWN_PROMPT.format(topic=topic, source_content=source_content)
     t0 = time.time()
-    raw = await _call_ollama(prompt, model=model)
+    raw = await _call_ollama(prompt, model=model, num_predict=4096, force_json=False)
     elapsed = int((time.time() - t0) * 1000)
-    logger.info("Base lesson generated in %dms", elapsed)
+    logger.info("Base lesson generated in %dms  words≈%d", elapsed, len(raw.split()))
 
-    return _parse_json_response(raw, ["title", "content"])
+    return _build_lesson_dict_from_markdown(raw)
 
 
 async def generate_quiz(topic: str, difficulty: str = "medium", count: int = 5, model_override: str | None = None) -> dict:
