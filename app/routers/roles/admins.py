@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from bson import ObjectId
 from datetime import datetime
+import asyncio
 from dotenv import load_dotenv
 from app.schemas.teachers import TeacherUpdate
 from app.crud import admins as crud_admin

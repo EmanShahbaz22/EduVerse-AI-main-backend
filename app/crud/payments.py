@@ -63,3 +63,15 @@ async def get_student_payments(
     )
     docs = await cursor.to_list(100)
     return [_convert_id(d) for d in docs]
+
+
+async def find_pending_payment(student_id: str, course_id: str) -> dict | None:
+    """Find a pending payment record by student and course."""
+    doc = await db.payments.find_one(
+        {
+            "studentId": student_id,
+            "courseId": course_id,
+            "status": "pending",
+        }
+    )
+    return _convert_id(doc)
