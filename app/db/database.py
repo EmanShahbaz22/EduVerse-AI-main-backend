@@ -42,14 +42,23 @@ if not MONGO_URI:
         "Add it to your .env file: MONGO_URI=mongodb+srv://..."
     )
 
-# ── FIX 2: Connection timeouts ──
-# Default timeouts are 30s — a dead DB makes every request hang.
-# serverSelectionTimeoutMS: how long to wait to find a usable server.
-# connectTimeoutMS: how long to wait for a single connection to open.
+# ── FIX 2: Connection timeouts + keep-alive ──
+# heartbeatFrequencyMS: Motor pings Atlas every 5s to keep the connection alive
+#   during long Ollama benchmark runs (8+ minutes). Without this, Atlas drops
+#   the connection after ~10 min of silence and the next DB call gets AutoReconnect.
+# socketTimeoutMS=0: disables per-socket read timeout so long operations
+#   (e.g. saving benchmark results after a 456s Ollama call) don't fail mid-write.
+# maxIdleTimeMS=600000: connections can sit idle in the pool for 10 min before
+#   being closed — matches the longest expected benchmark duration.
 client = AsyncIOMotorClient(
     MONGO_URI,
     serverSelectionTimeoutMS=30000,   # fail fast if DB is unreachable (30s)
     connectTimeoutMS=30000,
+    heartbeatFrequencyMS=5000,         # ping every 5s — keeps Atlas from dropping idle connections
+    socketTimeoutMS=0,                 # no per-socket timeout — long writes must complete
+    maxIdleTimeMS=600000,              # keep pool connections alive for 10 min
+    retryReads=True,                  # auto-retry idempotent reads on AutoReconnect
+    retryWrites=True,                 # auto-retry idempotent writes on AutoReconnect
 )
 db = client["LMS"]
 
@@ -71,6 +80,12 @@ ai_generated_lessons_collection    = db["aiGeneratedLessons"]
 student_classifications_collection = db["studentClassifications"]
 ai_quiz_sessions_collection        = db["aiQuizSessions"]
 ai_chat_history_collection         = db["aiChatHistory"]
+
+# ── RAG / Local LLM pipeline collections ──
+config_collection             = db["config"]            # active_worker_model setting
+reference_uploads_collection  = db["referenceUploads"]  # teacher file upload records
+validation_results_collection = db["validationResults"] # per-generation audit scores
+benchmark_results_collection  = db["benchmarkResults"]  # SA benchmark comparison runs
 
 
 # ── Backward Compatibility Accessors ──
@@ -192,6 +207,28 @@ async def ensure_indexes() -> None:
     await ai_chat_history_collection.create_index(
         [("studentId", ASCENDING), ("courseId", ASCENDING)],
         name="ai_chat_history_student_course_idx",
+    )
+
+    # ── RAG / Local LLM Pipeline indexes ──
+
+    # referenceUploads: look up by course + lesson for RAG context retrieval
+    await reference_uploads_collection.create_index(
+        [("course_id", ASCENDING), ("lesson_id", ASCENDING)],
+        name="ref_uploads_course_lesson_idx",
+    )
+    await reference_uploads_collection.create_index(
+        [("tenant_id", ASCENDING), ("uploaded_by", ASCENDING)],
+        name="ref_uploads_tenant_teacher_idx",
+    )
+
+    # validationResults: filter by model + verdict for SA dashboard
+    await validation_results_collection.create_index(
+        [("worker_model", ASCENDING), ("final_verdict", ASCENDING)],
+        name="validation_results_model_verdict_idx",
+    )
+    await validation_results_collection.create_index(
+        [("tenant_id", ASCENDING), ("timestamp", ASCENDING)],
+        name="validation_results_tenant_time_idx",
     )
 
     logger.info("All MongoDB indexes verified/created successfully.")

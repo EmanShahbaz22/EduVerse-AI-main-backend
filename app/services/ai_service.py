@@ -3,15 +3,13 @@ from __future__ import annotations
 ai_service.py — The AI Brain Center 🧠
 
 FIXES APPLIED:
-    1. get_llm() is called ONCE outside the retry loop (not on every attempt)
-    2. MAX_RETRIES = 1 — one retry for transient (non-quota) errors only
-    3. 429/RESOURCE_EXHAUSTED → raises RateLimitError immediately (no sleep)
-       The router catches this and returns HTTP 503 with a Retry-After hint
-       instead of hanging the HTTP connection for 60-120 seconds
-    4. Non-quota transient errors: 1 retry after 5s
-    5. JSON fallback parser kept — handles cases where Gemini skips the ```json fence
-    6. transport="rest" kept — avoids grpcio issues on Python 3.14/Windows
-    7. max_retries=0 on LangChain client — prevents silent internal retries
+    1. Uses google.generativeai SDK directly — no LangChain ChatGoogleGenerativeAI.
+       LangChain's _chat_with_retry tenacity loop retries 429 even with max_retries=0
+       (stop_after_attempt(1) still allows one retry). The SDK with retry=None fires
+       EXACTLY ONE HTTP request and raises immediately on 429.
+    2. repair_json_string runs FIRST — strips ```json fences, escapes literal newlines.
+    3. 429/ResourceExhausted → RateLimitError immediately (no sleep, no retry).
+    4. LangChain kept ONLY for PromptTemplate + StructuredOutputParser (no API calls).
 """
 
 
@@ -25,63 +23,121 @@ class RateLimitError(Exception):
 import os
 import json
 import logging
-import asyncio
 import re
 from dotenv import load_dotenv
 
+import google.generativeai as genai
+import google.api_core.exceptions
+
 from langchain.prompts import PromptTemplate
 from langchain.output_parsers import StructuredOutputParser, ResponseSchema
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
-# 1. Initialize the Gemini LLM
+# 1. Configuration
 # ──────────────────────────────────────────────
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# gemini-2.5-flash: high quota, ultra-fast model.
-GEMINI_MODEL =  "gemini-2.5-flash"
-
-# Retry config — tuned for Gemini free tier
-# 429 errors are raised immediately as RateLimitError (no retry) so we don't
-# hang the HTTP connection. The caller (router) returns 503 + Retry-After.
-# Only transient non-quota errors (parse failures, network blips) are retried once.
-MAX_RETRIES = 1          # 1 retry for non-quota errors only (2 total attempts)
-OTHER_ERROR_DELAY = 5   # seconds — short wait for transient errors before 1 retry
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.0-flash"
 
 
-def get_llm():
+def _get_model(*, json_mode: bool = False, model_name: str | None = None) -> genai.GenerativeModel:
+    """Returns a configured GenerativeModel. No LangChain retry wrapper.
+
+    Args:
+        json_mode: When True, sets response_mime_type='application/json'
+                   so Gemini is forced to return well-formed JSON.
+                   Use for lesson / quiz generation. Leave False for chat.
+        model_name: Override the default model name (used for fallback).
     """
-    Creates and returns the Gemini LLM instance.
-
-    FIX: This is now called ONCE per generate_lesson() call and reused
-    across all retry attempts — not recreated on every attempt.
-
-    Raises ValueError if GEMINI_API_KEY is missing, so the caller
-    can surface a 503 instead of a generic 500.
-    """
-    # Remove debug print in production — use logger instead so it
-    # respects log level config and doesn't leak keys to stdout
-    logger.debug("Initializing Gemini LLM (model=%s)", GEMINI_MODEL)
-
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
         raise ValueError(
-            
             "GEMINI_API_KEY is not set! "
-            "Get a free key from https://aistudio.google.com/apikey "
-            "and add it to your .env file."
+            "Get a free key from https://aistudio.google.com/apikey"
         )
+    genai.configure(api_key=GEMINI_API_KEY)
 
-    return ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GEMINI_API_KEY,
-        temperature=0.7,
-        transport="rest",   # avoids grpcio C-extension issues on Python 3.14/Windows
-        max_retries=0,
+    config_kwargs = {"temperature": 0.7}
+    if json_mode:
+        config_kwargs["response_mime_type"] = "application/json"
+
+    return genai.GenerativeModel(
+        model_name=model_name or GEMINI_MODEL,
+        generation_config=genai.GenerationConfig(**config_kwargs),
     )
+
+
+async def _call_gemini_once(prompt_text: str, *, json_mode: bool = False) -> str:
+    """
+    Fires exactly ONE Gemini API call with ZERO retries for quota errors.
+    retry=None disables both google-api-core and LangChain retry layers.
+
+    - 429 ResourceExhausted  → RateLimitError immediately (no retry, no fallback).
+    - 503 ServiceUnavailable  → wait 30s, retry PRIMARY model (503 ≠ quota).
+      If primary still 503   → wait 15s, try FALLBACK model once.
+      If fallback hits 429   → RateLimitError (don't burn more quota).
+
+    Switching to the fallback on the first 503 was wrong: it burned the
+    fallback model's separate quota when the primary was just temporarily
+    busy, causing back-to-back 429s within the same minute window.
+
+    Args:
+        json_mode: When True, sets response_mime_type='application/json' so
+                   Gemini is forced to return valid JSON.
+    """
+    import asyncio
+
+    model = _get_model(json_mode=json_mode)
+    try:
+        response = await model.generate_content_async(
+            prompt_text,
+            request_options={"retry": None},
+        )
+        return response.text
+    except google.api_core.exceptions.ResourceExhausted as exc:
+        raise RateLimitError(
+            "Gemini API quota exceeded (429). "
+            "Free tier resets per minute — retry in ~60 seconds."
+        ) from exc
+    except google.api_core.exceptions.ServiceUnavailable:
+        # 503 = server temporarily overloaded — NOT a quota error.
+        # Wait 30s (quota resets per minute) then retry the SAME primary model.
+        logger.warning(
+            "Gemini 503 (model overloaded). Waiting 30s then retrying primary model %s…",
+            GEMINI_MODEL,
+        )
+        await asyncio.sleep(30)
+        try:
+            response = await model.generate_content_async(
+                prompt_text,
+                request_options={"retry": None},
+            )
+            return response.text
+        except google.api_core.exceptions.ResourceExhausted as exc:
+            raise RateLimitError(
+                "Gemini API quota exceeded (429) on primary model retry."
+            ) from exc
+        except google.api_core.exceptions.ServiceUnavailable:
+            # Primary is still down after 30s — escalate to fallback as last resort.
+            logger.warning(
+                "Primary model still unavailable after 30s. Waiting 15s then trying fallback %s…",
+                GEMINI_FALLBACK_MODEL,
+            )
+            await asyncio.sleep(15)
+            fallback_model = _get_model(json_mode=json_mode, model_name=GEMINI_FALLBACK_MODEL)
+            try:
+                response = await fallback_model.generate_content_async(
+                    prompt_text,
+                    request_options={"retry": None},
+                )
+                return response.text
+            except google.api_core.exceptions.ResourceExhausted as exc:
+                raise RateLimitError(
+                    "Gemini API quota exceeded (429) on fallback model."
+                ) from exc
 
 
 # ──────────────────────────────────────────────
@@ -160,24 +216,208 @@ base_lesson_prompt = PromptTemplate(
 # ── JSON Repair Utility ──
 def repair_json_string(raw: str) -> str:
     """
-    Attempts to fix common LLM JSON errors, specifically missing commas 
-    between fields (e.g., '"field1": "val" "field2": "val"').
+    Fixes common LLM JSON output issues:
+
+    1. Strips ```json / ``` markdown fences.
+    2. Escapes literal (unescaped) newlines inside JSON string values.
+       This is the #1 cause of parse failures when Gemini puts multiline
+       Markdown content in the `content` field — JSON requires \\n, not a
+       real line-break inside a string value.
+    3. Attempts to fix missing commas between top-level fields as a last resort.
     """
-    # Remove markdown fences if present
-    raw = re.sub(r'^```json\s*', '', raw.strip())
+    # Step 1: Strip markdown code fences
+    raw = re.sub(r'^```(?:json)?\s*', '', raw.strip())
     raw = re.sub(r'\s*```$', '', raw)
-    
-    # Fix missing commas between fields:
-    # Look for a closing quote followed by a newline/space and then an opening quote (start of next key)
-    # Using a lookahead to find " followed by optional whitespace and then another "
-    # Pattern: " (whitespace) " -> "," (whitespace) "
-    repaired = re.sub(r'(")\s*(\s*\n\s*)(")', r'\1,\2\3', raw)
-    
+    raw = raw.strip()
+
+    # Step 2: Escape literal newlines inside JSON string values.
+    # Walk character-by-character tracking whether we are inside a string.
+    # When inside a string, replace a raw '\n' with '\\n' and '\t' with '\\t'.
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in raw:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == '\\':
+            result.append(ch)
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ch == '\n':
+            result.append('\\n')
+            continue
+        if in_string and ch == '\r':
+            # Skip bare carriage returns inside strings
+            continue
+        if in_string and ch == '\t':
+            result.append('\\t')
+            continue
+        result.append(ch)
+    repaired = ''.join(result)
+
     return repaired
 
 
+# ── Shared parse helper ──
+
+def _extract_fields_by_regex(raw: str) -> dict | None:
+    """
+    Last-resort parser: extract each known field individually via regex.
+    
+    When Gemini puts unescaped quotes inside the `content` field
+    (e.g. … some "quoted word" inside markdown …) the JSON is malformed
+    and standard parsers fail.  This function grabs each field value by
+    matching the key name and reading the value between the surrounding
+    structure markers.
+    """
+    fields = {}
+    
+    # Simple string fields — grab value between "key": "..." 
+    # using a non-greedy match that stops at the next top-level key or closing brace.
+    simple_keys = ["title", "difficulty", "summary"]
+    for key in simple_keys:
+        match = re.search(
+            rf'"{key}"\s*:\s*"((?:[^"\\]|\\.){{0,500}})"',
+            raw,
+            re.DOTALL,
+        )
+        if match:
+            fields[key] = match.group(1).replace('\\"', '"').replace('\\n', '\n')
+    
+    # estimated_duration_minutes — numeric
+    dur_match = re.search(r'"estimated_duration_minutes"\s*:\s*(\d+)', raw)
+    if dur_match:
+        fields["estimated_duration_minutes"] = int(dur_match.group(1))
+    
+    # key_concepts — JSON array
+    kc_match = re.search(r'"key_concepts"\s*:\s*(\[.*?\])', raw, re.DOTALL)
+    if kc_match:
+        try:
+            fields["key_concepts"] = json.loads(kc_match.group(1))
+        except json.JSONDecodeError:
+            fields["key_concepts"] = [kc_match.group(1)]
+    
+    # content — THE PROBLEMATIC FIELD.
+    # Strategy: find "content": " and then grab everything until the next
+    # top-level key pattern ("difficulty": or "estimated_duration_minutes":)
+    content_match = re.search(
+        r'"content"\s*:\s*"([\s\S]*?)"\s*,\s*"(?:difficulty|estimated_duration_minutes|key_concepts|summary)"',
+        raw,
+    )
+    if content_match:
+        content_val = content_match.group(1)
+        # Unescape the common escape sequences
+        content_val = content_val.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
+        fields["content"] = content_val
+    elif "title" in fields:
+        # Absolute fallback: grab everything between "content": " and the last few fields
+        content_start = raw.find('"content"')
+        if content_start != -1:
+            # Find the opening quote of the content value
+            colon_pos = raw.find(':', content_start + 9)
+            if colon_pos != -1:
+                quote_pos = raw.find('"', colon_pos + 1)
+                if quote_pos != -1:
+                    # Find where the next field starts (scan backwards from end)
+                    for end_key in ['"summary"', '"key_concepts"', '"estimated_duration_minutes"', '"difficulty"']:
+                        end_pos = raw.rfind(end_key)
+                        if end_pos > quote_pos:
+                            # Go back past the comma and closing quote
+                            snippet = raw[quote_pos + 1:end_pos].rstrip().rstrip(',').rstrip().rstrip('"')
+                            snippet = snippet.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
+                            fields["content"] = snippet
+                            break
+    
+    if "title" in fields and "content" in fields:
+        return fields
+    return None
+
+
+def _parse_lesson_response(raw_content: str) -> dict:
+    """
+    Robust parser with multiple fallback layers:
+    
+    1. json.loads (strict) on cleaned input
+    2. json.loads (strict=False) — allows control characters
+    3. Field-by-field regex extraction — handles unescaped quotes
+       inside the content field that break standard JSON parsing
+    4. LangChain StructuredOutputParser + repair_json_string
+    
+    No API calls are made here.
+    """
+    repaired = repair_json_string(raw_content)
+    parsed = None
+
+    # ── Layer 1: Direct json.loads ──
+    json_text = repaired
+    json_match = re.search(r'\{[\s\S]*\}', repaired)
+    if json_match:
+        json_text = json_match.group()
+    
+    try:
+        parsed = json.loads(json_text)
+    except json.JSONDecodeError:
+        pass
+
+    # ── Layer 2: json.loads with strict=False (allows control chars) ──
+    if parsed is None:
+        try:
+            parsed = json.loads(json_text, strict=False)
+        except json.JSONDecodeError:
+            pass
+
+    # ── Layer 3: Field-by-field regex extraction ──
+    if parsed is None:
+        logger.warning("Standard JSON parsing failed, trying field-by-field regex extraction")
+        parsed = _extract_fields_by_regex(raw_content)
+
+    # ── Layer 4: LangChain structured parser (original approach) ──
+    if parsed is None:
+        try:
+            parsed = lesson_output_parser.parse(repaired)
+        except Exception as parse_err:
+            logger.warning("All parse strategies failed. Last error: %s", parse_err)
+            raise ValueError(
+                f"Could not parse AI response as JSON even after repair. "
+            ) from parse_err
+
+    # ── Safe defaults for every field the schema requires ──
+    # Use .get() so a partially-extracted regex result never causes a KeyError
+    # downstream in lesson_generator when it reads these fields.
+
+    # key_concepts: must be a list
+    kc = parsed.get("key_concepts", [])
+    if isinstance(kc, str):
+        try:
+            kc = json.loads(kc)
+        except json.JSONDecodeError:
+            kc = [kc]
+    parsed["key_concepts"] = kc if isinstance(kc, list) else []
+
+    # estimated_duration_minutes: must be an int
+    raw_duration = parsed.get("estimated_duration_minutes", None)
+    try:
+        parsed["estimated_duration_minutes"] = int(raw_duration) if raw_duration is not None else 10
+    except (ValueError, TypeError):
+        parsed["estimated_duration_minutes"] = 10
+
+    # Ensure remaining string fields always exist (never KeyError downstream)
+    parsed.setdefault("title", "Untitled Lesson")
+    parsed.setdefault("content", "")
+    parsed.setdefault("difficulty", "intermediate")
+    parsed.setdefault("summary", "")
+
+    return parsed
+
+
 # ──────────────────────────────────────────────
-# 4. The main function to generate a lesson
+# 4. Generate functions (1 API call each, no retries)
 # ──────────────────────────────────────────────
 
 async def generate_lesson(pace: str, topic: str, score: float, weak_areas: str) -> dict:
@@ -193,232 +433,42 @@ async def generate_lesson(pace: str, topic: str, score: float, weak_areas: str) 
     Returns:
         dict with keys: title, content, difficulty, estimated_duration_minutes,
                         key_concepts, summary
-
-    RETRY LOGIC:
-        - 429/RESOURCE_EXHAUSTED: raises RateLimitError IMMEDIATELY (no sleep).
-          The router catches this and returns HTTP 503 + Retry-After: 60 header.
-          Do NOT retry quota errors inside a web request — it hangs the connection.
-        - Other transient errors (parse failures, network blips): 1 retry after 5s
-        - LLM instance is created ONCE and reused across all attempts
+    ONE Gemini API call is made. 429 raises RateLimitError immediately.
     """
-    last_exception = None
-
-    # FIX: Create LLM once, outside the retry loop.
-    # Old code called get_llm() inside the loop — new connection on every attempt.
-    llm = get_llm()
-    chain = lesson_prompt | llm
-
-    for attempt in range(1, MAX_RETRIES + 2):  # attempts: 1, 2, 3
-        try:
-            logger.info(
-                "Calling Gemini API (attempt %d/%d) pace=%s topic=%s score=%s",
-                attempt, MAX_RETRIES + 1, pace, topic, score
-            )
-
-            # USE SYNC INVOKE IN A THREAD: ainvoke is currently broken in this 
-            # environment for Gemini + REST transport (TypeError: coroutine cannot be awaited)
-            result = await asyncio.to_thread(chain.invoke, {
-                "pace": pace,
-                "topic": topic,
-                "score": str(score),
-                "weak_areas": weak_areas,
-            })
-
-            raw_content = result.content
-
-            # Guard: empty response means a silent API-side failure
-            if not raw_content or not raw_content.strip():
-                raise ValueError(
-                    "Gemini returned an empty response. "
-                    "Check your API quota at https://aistudio.google.com/apikey"
-                )
-
-            # ── Parse the AI response ──
-            # Try structured parser first; fall back to raw JSON extraction
-            # if the AI didn't wrap output in ```json fences exactly.
-            parsed = None
-            try:
-                parsed = lesson_output_parser.parse(raw_content)
-            except Exception as parse_err:
-                logger.warning(
-                    "StructuredOutputParser failed (%s), trying JSON fallback…",
-                    parse_err
-                )
-                json_match = re.search(r'\{[\s\S]*\}', raw_content)
-                if json_match:
-                    try:
-                        parsed = json.loads(json_match.group())
-                    except json.JSONDecodeError:
-                        pass
-
-                if parsed is None:
-                    # Trying JSON repair as a last resort
-                    logger.warning("JSON parsing failed, attempting repair…")
-                    repaired_content = repair_json_string(raw_content)
-                    try:
-                        parsed = json.loads(repaired_content)
-                    except json.JSONDecodeError:
-                        # If repair also fails, throw the original parse error
-                        raise ValueError(
-                            f"Could not parse AI response as JSON. "
-                            f"Raw content (first 200 chars): {raw_content[:200]}"
-                        ) from parse_err
-
-            # Ensure key_concepts is always a list
-            if isinstance(parsed.get("key_concepts"), str):
-                try:
-                    parsed["key_concepts"] = json.loads(parsed["key_concepts"])
-                except json.JSONDecodeError:
-                    parsed["key_concepts"] = [parsed["key_concepts"]]
-
-            # Ensure duration is always an integer
-            try:
-                parsed["estimated_duration_minutes"] = int(parsed["estimated_duration_minutes"])
-            except (ValueError, TypeError):
-                parsed["estimated_duration_minutes"] = 10  # safe default
-
-            logger.info("Successfully generated lesson: %s", parsed.get("title", "Untitled"))
-            return parsed
-
-        except Exception as e:
-            last_exception = e
-            err_str = str(e).lower()
-            is_rate_limit = any(
-                kw in err_str for kw in ["429", "resource_exhausted", "rate limit", "quota"]
-            )
-
-            if is_rate_limit:
-                # FAIL FAST on quota errors — do NOT sleep inside the request handler.
-                # Sleeping 60s here hangs the HTTP connection until the client times out.
-                # Instead, raise RateLimitError immediately so the router can return
-                # HTTP 503 with a Retry-After hint and let the client decide when to retry.
-                logger.warning(
-                    "Rate limited by Gemini (attempt %d). Raising RateLimitError — "
-                    "caller should retry after ~60s. Error: %s",
-                    attempt, str(e)
-                )
-                raise RateLimitError(
-                    "Gemini API quota exceeded (429). "
-                    "The free tier resets per minute — please retry in 60 seconds."
-                ) from e
-
-            if attempt >= MAX_RETRIES + 1:
-                # All non-quota attempts exhausted
-                break
-
-            # Non-quota transient error (network blip, parse failure) — retry once
-            logger.warning(
-                "Gemini call failed (attempt %d/%d), retrying in %ds. Error: %s",
-                attempt, MAX_RETRIES + 1, OTHER_ERROR_DELAY, str(e)
-            )
-            await asyncio.sleep(OTHER_ERROR_DELAY)
-
-    logger.error(
-        "All %d Gemini attempts failed. Last error: %s",
-        MAX_RETRIES + 1, str(last_exception)
+    logger.info(
+        "Calling Gemini API (1 call, no retry) pace=%s topic=%s score=%s",
+        pace, topic, score
     )
-    raise last_exception
+    prompt_text = lesson_prompt.format(
+        pace=pace, topic=topic, score=str(score), weak_areas=weak_areas
+    )
+    raw_content = await _call_gemini_once(prompt_text, json_mode=True)
+
+    if not raw_content or not raw_content.strip():
+        raise ValueError("Gemini returned an empty response.")
+
+    parsed = _parse_lesson_response(raw_content)
+    logger.info("Successfully generated lesson: %s", parsed.get("title", "Untitled"))
+    return parsed
+
 
 
 async def generate_base_lesson(topic: str, source_content: str) -> dict:
     """
     Generate the first/base lesson from the teacher's authored lesson notes.
-
-    This path intentionally does NOT classify the student or assume a pace.
-    It simply expands the teacher's source material into a richer lesson.
+    ONE Gemini API call is made. 429 raises RateLimitError immediately.
     """
-    last_exception = None
-    llm = get_llm()
-    chain = base_lesson_prompt | llm
-
-    for attempt in range(1, MAX_RETRIES + 2):
-        try:
-            logger.info(
-                "Calling Gemini API for base lesson (attempt %d/%d) topic=%s",
-                attempt, MAX_RETRIES + 1, topic
-            )
-
-            result = await asyncio.to_thread(chain.invoke, {
-                "topic": topic,
-                "source_content": source_content,
-            })
-
-            raw_content = result.content
-            if not raw_content or not raw_content.strip():
-                raise ValueError(
-                    "Gemini returned an empty response. "
-                    "Check your API quota at https://aistudio.google.com/apikey"
-                )
-
-            parsed = None
-            try:
-                parsed = lesson_output_parser.parse(raw_content)
-            except Exception as parse_err:
-                logger.warning(
-                    "StructuredOutputParser failed for base lesson (%s), trying JSON fallback...",
-                    parse_err
-                )
-                json_match = re.search(r'\{[\s\S]*\}', raw_content)
-                if json_match:
-                    try:
-                        parsed = json.loads(json_match.group())
-                    except json.JSONDecodeError:
-                        pass
-
-                if parsed is None:
-                    logger.warning("JSON parsing failed for base lesson, attempting repair...")
-                    repaired_content = repair_json_string(raw_content)
-                    try:
-                        parsed = json.loads(repaired_content)
-                    except json.JSONDecodeError:
-                        raise ValueError(
-                            f"Could not parse AI response as JSON. "
-                            f"Raw content (first 200 chars): {raw_content[:200]}"
-                        ) from parse_err
-
-            if isinstance(parsed.get("key_concepts"), str):
-                try:
-                    parsed["key_concepts"] = json.loads(parsed["key_concepts"])
-                except json.JSONDecodeError:
-                    parsed["key_concepts"] = [parsed["key_concepts"]]
-
-            try:
-                parsed["estimated_duration_minutes"] = int(parsed["estimated_duration_minutes"])
-            except (ValueError, TypeError):
-                parsed["estimated_duration_minutes"] = 10
-
-            logger.info("Successfully generated base lesson: %s", parsed.get("title", "Untitled"))
-            return parsed
-
-        except Exception as e:
-            last_exception = e
-            err_str = str(e).lower()
-            is_rate_limit = any(
-                kw in err_str for kw in ["429", "resource_exhausted", "rate limit", "quota"]
-            )
-
-            if is_rate_limit:
-                logger.warning(
-                    "Rate limited by Gemini during base lesson generation (attempt %d). "
-                    "Raising RateLimitError. Error: %s",
-                    attempt, str(e)
-                )
-                raise RateLimitError(
-                    "Gemini API quota exceeded (429). "
-                    "The free tier resets per minute - please retry in 60 seconds."
-                ) from e
-
-            if attempt >= MAX_RETRIES + 1:
-                break
-
-            logger.warning(
-                "Base lesson generation failed (attempt %d/%d), retrying in %ds. Error: %s",
-                attempt, MAX_RETRIES + 1, OTHER_ERROR_DELAY, str(e)
-            )
-            await asyncio.sleep(OTHER_ERROR_DELAY)
-
-    logger.error(
-        "All %d Gemini attempts for base lesson failed. Last error: %s",
-        MAX_RETRIES + 1, str(last_exception)
+    logger.info(
+        "Calling Gemini API for base lesson (1 call, no retry) topic=%s", topic
     )
-    raise last_exception
+    prompt_text = base_lesson_prompt.format(
+        topic=topic, source_content=source_content
+    )
+    raw_content = await _call_gemini_once(prompt_text, json_mode=True)
+
+    if not raw_content or not raw_content.strip():
+        raise ValueError("Gemini returned an empty response.")
+
+    parsed = _parse_lesson_response(raw_content)
+    logger.info("Successfully generated base lesson: %s", parsed.get("title", "Untitled"))
+    return parsed

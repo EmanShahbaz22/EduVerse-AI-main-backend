@@ -5,6 +5,8 @@ import logging
 
 from datetime import datetime
 
+from datetime import datetime
+
 import stripe
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Depends, Request
@@ -302,6 +304,80 @@ async def stripe_webhook(request: Request):
 
 
 # ─── 3. Confirm Payment (frontend calls after successful card payment) ──
+
+
+@router.get("/confirm-session/{session_id}")
+async def confirm_checkout_session(
+    session_id: str,
+    current_user=Depends(require_role("student")),
+):
+    """
+    Called by frontend after Stripe Embedded Checkout redirects back with
+    ?checkout_success=1&session_id=cs_...
+    Verifies the checkout session with Stripe, marks payment as completed,
+    and enrolls the student in the course. Safe and idempotent.
+    """
+    # 1. Retrieve the checkout session from Stripe
+    try:
+        session = await asyncio.to_thread(
+            stripe.checkout.Session.retrieve, session_id
+        )
+    except stripe.error.StripeError as e:
+        logger.error("[ConfirmSession] Stripe error retrieving session %s: %s", session_id, e)
+        raise HTTPException(status_code=400, detail="Invalid checkout session")
+
+    # 2. Verify payment is paid
+    if session.get("payment_status") != "paid":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Payment not completed yet (status: {session.get('payment_status')})"
+        )
+
+    # 3. Extract metadata stored when session was created
+    metadata = session.get("metadata", {})
+    course_id = metadata.get("courseId")
+    student_id = metadata.get("studentId")
+    tenant_id = metadata.get("tenantId")
+
+    if not course_id or not student_id:
+        raise HTTPException(status_code=400, detail="Session metadata is incomplete")
+
+    # 4. Verify the logged-in student owns this payment
+    student_profile = await _get_current_student_profile(current_user)
+    resolved_student = await _resolve_student_profile(student_id, tenant_id)
+    if not resolved_student:
+        raise HTTPException(status_code=403, detail="Could not resolve student profile")
+
+    if resolved_student["student_id"] != student_profile["student_id"]:
+        raise HTTPException(status_code=403, detail="This payment does not belong to you")
+
+    # 5. Mark payment as completed (idempotent — skip if already done)
+    existing = await find_payment_by_session(session_id)
+    if existing and existing.get("status") != "completed":
+        await update_payment_status(
+            session_id,
+            "completed",
+            studentId=resolved_student["student_id"],
+            tenantId=resolved_student["tenant_id"],
+        )
+    elif not existing:
+        # Edge case: no payment record found (e.g., webhook already cleaned up)
+        logger.warning("[ConfirmSession] No payment record found for session %s, proceeding with enrollment only", session_id)
+
+    # 6. Enroll the student (idempotent)
+    logger.info("[ConfirmSession] Enrolling student %s in course %s", resolved_student["student_id"], course_id)
+    enrollment = await course_crud.enroll_student(
+        course_id,
+        resolved_student["student_id"],
+        resolved_student["tenant_id"],
+        enforce_same_tenant=False,
+    )
+    if not enrollment.get("success") and enrollment.get("message") != "Already enrolled":
+        logger.error("[ConfirmSession] Enrollment failed: %s", enrollment.get("message"))
+        raise HTTPException(status_code=400, detail=enrollment.get("message", "Enrollment failed"))
+
+    logger.info("[ConfirmSession] Success — student %s enrolled in course %s", resolved_student["student_id"], course_id)
+    return {"status": "success", "courseId": course_id, "enrolled": True}
 
 
 @router.post("/confirm/{payment_intent_id}")

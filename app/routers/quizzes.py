@@ -34,22 +34,34 @@ async def get_my_quizzes(current_user=Depends(get_current_user)):
 
     # Prefer AI quiz sessions (adaptive pipeline output)
     student_id = current_user.get("student_id") or current_user.get("user_id")
+    # Only return quizzes with at least 1 question — 0-question records are
+    # failed Ollama generation artefacts and should never be shown or polled.
     ai_cursor = ai_quiz_sessions_collection.find(
-        {"studentId": student_id}
+        {
+            "studentId": student_id,
+            "questions": {"$exists": True, "$not": {"$size": 0}},
+        }
     ).sort("generatedAt", -1)
+    from pydantic import ValidationError
+
     ai_quizzes = []
     async for q in ai_cursor:
-        ai_quizzes.append(
-            AIQuizResponse(
-                id=str(q.get("_id")),
-                studentId=str(q.get("studentId")),
-                courseId=str(q.get("courseId")),
-                lessonId=q.get("lessonId"),
-                topic=q.get("topic", ""),
-                questions=normalize_quiz_questions(q.get("questions", [])),
-                generatedAt=q.get("generatedAt"),
+        try:
+            ai_quizzes.append(
+                AIQuizResponse(
+                    id=str(q.get("_id")),
+                    studentId=str(q.get("studentId")),
+                    courseId=str(q.get("courseId")),
+                    lessonId=q.get("lessonId"),
+                    topic=q.get("topic", ""),
+                    questions=normalize_quiz_questions(q.get("questions", [])),
+                    generatedAt=q.get("generatedAt"),
+                )
             )
-        )
+        except ValidationError as e:
+            # Skip invalid/corrupt quizzes rather than crashing the endpoint
+            print(f"Skipping corrupt quiz {q.get('_id')}: {e}")
+            continue
 
     if ai_quizzes:
         return ai_quizzes

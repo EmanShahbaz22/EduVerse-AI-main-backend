@@ -44,6 +44,8 @@ from app.routers import (
     tenants,
     uploads,
     ai_tutor,
+    reference_upload,   # RAG reference file upload (teacher)
+    model_manager,      # Super Admin model control panel
 )
 from app.routers.auth import admin_auth, student_auth, teacher_auth, login
 from app.routers.dashboards import admin_dashboard
@@ -61,6 +63,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _seed_active_worker_model() -> None:
+    """
+    Ensure the active_worker_model config document exists in MongoDB.
+    If missing (fresh DB), inserts the default value 'phi3.5'.
+    The Super Admin can change this at runtime via /admin/models/set-active.
+    """
+    from app.db.database import config_collection
+    existing = await config_collection.find_one({"_id": "active_worker_model"})
+    if not existing:
+        await config_collection.insert_one({
+            "_id":        "active_worker_model",
+            "value":      "phi3.5",
+            "updated_by": "system",
+        })
+        logger.info("Seeded active_worker_model = 'phi3.5' in MongoDB config.")
+    else:
+        logger.info("active_worker_model already set to '%s'.", existing.get("value"))
+
+
 # ── FIX 1 & 2: Lifespan — startup + shutdown in one place ──
 # Old code had no startup event at all. The server appeared healthy but:
 # - DB connection was never verified (broken MONGO_URI discovered on first request)
@@ -73,6 +94,7 @@ async def lifespan(app: FastAPI):
     try:
         await ping_db()          # verify MongoDB is reachable
         await ensure_indexes()   # create indexes if they don't exist yet
+        await _seed_active_worker_model()   # ensure config doc exists in MongoDB
         logger.info("Startup complete — server is ready.")
     except RuntimeError as e:
         # DB is unreachable or misconfigured — log and exit immediately.
@@ -215,3 +237,8 @@ app.include_router(uploads.router)
 # Adaptive Learning (AI)
 app.include_router(adaptive_learning.router)
 app.include_router(ai_tutor.router)
+
+# RAG Reference Uploads (teacher) + Model Control (Super Admin)
+app.include_router(reference_upload.router)
+app.include_router(model_manager.router)
+app.include_router(model_manager.validations_router)

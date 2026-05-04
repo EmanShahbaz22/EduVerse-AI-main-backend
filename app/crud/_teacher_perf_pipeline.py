@@ -21,6 +21,7 @@ async def run_teacher_perf_pipeline(teacher_id: str, tenant_id: str):
         }
         courses = await courses_collection.find(teacher_query).to_list(length=None)
         course_ids = [str(c["_id"]) for c in courses]
+        course_oids = [ObjectId(cid) for cid in course_ids if ObjectId.is_valid(cid)]
         if not course_ids:
             return []
 
@@ -44,10 +45,12 @@ async def run_teacher_perf_pipeline(teacher_id: str, tenant_id: str):
             }
         }
 
+        # Match both string and ObjectId forms so we catch all enrolled students
+        all_course_refs = course_oids + course_ids
         pipeline = [
-            {"$match": {"enrolledCourses": {"$in": course_ids}}},
+            {"$match": {"enrolledCourses": {"$in": all_course_refs}}},
             {"$unwind": "$enrolledCourses"},
-            {"$match": {"enrolledCourses": {"$in": course_ids}}},
+            {"$match": {"enrolledCourses": {"$in": all_course_refs}}},
             {
                 "$lookup": {
                     "from": "users",
@@ -108,9 +111,7 @@ async def run_teacher_perf_pipeline(teacher_id: str, tenant_id: str):
         )
         from app.crud.grade_calculator import calculate_grade
         
-        # 1. Get all potential points per course
-        course_oids = [ObjectId(cid) for cid in course_ids if ObjectId.is_valid(cid)]
-        
+        # 1. Get all potential points per course (use course_oids already computed above)
         quizzes = await quizzes_collection.find(
             {"courseId": {"$in": course_oids + course_ids}, "tenantId": toid}
         ).to_list(None)

@@ -18,4 +18,3 @@ def calculate_grade(marks: float, total_marks: float) -> str:
     if percentage >= 55: return "C"
     if percentage >= 40: return "D"
     return "F"
-

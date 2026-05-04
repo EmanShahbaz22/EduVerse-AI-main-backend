@@ -140,7 +140,10 @@ async def submit_and_grade_submission(payload, *, student_id: str, tenant_id: st
     )
 
     # --- TRIGGER ADAPTIVE PIPELINE ---
-    if is_ai_quiz or True: # Trigger for all to ensure continuity
+    # Only trigger for AI-generated quizzes — teacher quizzes don't need
+    # the classify → generate-next-lesson flow.  The old `or True` was a
+    # debug leftover that doubled Gemini quota usage on every submission.
+    if is_ai_quiz:
         import asyncio
         from app.services.lesson_generator import generate_lesson_for_student
         

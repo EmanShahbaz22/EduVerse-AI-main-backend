@@ -1,37 +1,22 @@
-import os
+"""
+chat_tutor.py — AI Tutor Chat Service
+
+MIGRATION: Replaced Gemini (_call_gemini_once) with local Ollama (ollama_service).
+
+All context-building logic (lesson content, classification, history) is unchanged.
+Only the LLM call (Step 6) now goes to the active local Ollama worker model
+instead of the Gemini API.
+"""
+
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-import asyncio
-from langchain.chains import ConversationChain
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.prompts import PromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
-
+from app.services.ollama_service import _call_ollama, get_active_model
 from app.db.database import ai_chat_history_collection, db
 from bson import ObjectId
 
 logger = logging.getLogger(__name__)
-
-# ──────────────────────────────────────────────
-# 1. LLM Factory
-# ──────────────────────────────────────────────
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.5-flash"
-
-
-def get_chat_llm():
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY missing.")
-    return ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GEMINI_API_KEY,
-        temperature=0.7,
-        transport="rest",
-        max_retries=0,
-    )
 
 
 # ──────────────────────────────────────────────
@@ -179,7 +164,27 @@ async def _fetch_classification(student_id: str, course_id: str, lesson_id: Opti
 
 
 # ──────────────────────────────────────────────
-# 4. Chat Tutor Service
+# 4. RAG context helper (optional enrichment)
+# ──────────────────────────────────────────────
+
+async def _fetch_rag_context(course_id: str, lesson_id: Optional[str]) -> str:
+    """
+    Attempt to retrieve RAG context from ChromaDB for the lesson's reference upload.
+    Returns empty string if no upload exists (graceful degradation).
+    """
+    if not lesson_id:
+        return ""
+    try:
+        collection_id = f"{course_id}_{lesson_id}"
+        from app.services.rag_service import retrieve_context
+        return retrieve_context("tutor context", collection_id, top_k=3)
+    except Exception as exc:
+        logger.debug("RAG context retrieval skipped (lesson=%s): %s", lesson_id, exc)
+        return ""
+
+
+# ──────────────────────────────────────────────
+# 5. Chat Tutor Service
 # ──────────────────────────────────────────────
 
 class ChatTutorService:
@@ -203,6 +208,11 @@ class ChatTutorService:
         else:
             logger.debug("No lesson context available — continuing without it.")
 
+        # ── Step 1b: Optional RAG context enrichment ──────────────────────────
+        rag_context = await _fetch_rag_context(course_id, lesson_id)
+        if rag_context:
+            logger.debug("RAG context injected (%d chars).", len(rag_context))
+
         # ── Step 2: Fetch student classification ──────────────────────────────
         classification = await _fetch_classification(student_id, course_id, lesson_id)
         score: Optional[float] = None
@@ -222,13 +232,12 @@ class ChatTutorService:
 
         # ── Step 3: Build system prompt ───────────────────────────────────────
         system_prefix = _build_system_prompt(lesson_content, score, pace, weak_areas)
-        full_template = system_prefix + _PROMPT_SUFFIX
-        prompt = PromptTemplate(
-            template=full_template,
-            input_variables=["history", "input"],
-        )
 
-        # ── Step 4: Load chat history into memory ─────────────────────────────
+        # Append RAG reference material if available
+        if rag_context:
+            system_prefix += f"\n\nReference Material:\n{rag_context}\n"
+
+        # ── Step 4: Load chat history from DB ────────────────────────────────
         history_query = {"studentId": student_id, "courseId": course_id}
         if lesson_id:
             history_query["lessonId"] = lesson_id
@@ -242,24 +251,26 @@ class ChatTutorService:
         )
         recent_rows.reverse()
 
-        # BUG FIX: use return_messages=False so memory.load_memory_variables
-        # returns a plain string instead of a list of BaseMessage objects.
-        # The previous return_messages=True caused the history_for_frontend
-        # loop to crash on odd-length or empty histories.
-        memory = ConversationBufferWindowMemory(k=5, return_messages=False)
+        # ── Step 5: Build full prompt with history ────────────────────────────
+        history_text = ""
         for entry in recent_rows:
-            memory.save_context(
-                {"input": entry["studentMessage"]},
-                {"output": entry["aiResponse"]},
-            )
+            history_text += f"Student: {entry['studentMessage']}\nTutor: {entry['aiResponse']}\n"
 
-        # ── Step 5: Invoke LLM ────────────────────────────────────────────────
-        llm = get_chat_llm()
-        chain = ConversationChain(llm=llm, memory=memory, prompt=prompt, verbose=False)
-        response = await asyncio.to_thread(chain.invoke, {"input": message})
-        ai_text = response.get("response", "I'm sorry, I couldn't provide a response right now.")
+        full_prompt = system_prefix + f"""
 
-        # ── Step 6: Persist interaction ───────────────────────────────────────
+Current conversation:
+{history_text}
+Student: {message}
+Tutor:"""
+
+        # ── Step 6: Call Ollama (local LLM) ──────────────────────────────────
+        model = await get_active_model()
+        logger.info("Calling Ollama tutor model=%s", model)
+
+        ai_text = await _call_ollama(full_prompt, model=model)
+        ai_text = ai_text.strip() if ai_text else "I'm sorry, I couldn't provide a response right now."
+
+        # ── Step 7: Persist interaction ───────────────────────────────────────
         await ai_chat_history_collection.insert_one({
             "studentId": student_id,
             "courseId": course_id,
@@ -267,13 +278,10 @@ class ChatTutorService:
             "studentMessage": message,
             "aiResponse": ai_text,
             "timestamp": datetime.utcnow().isoformat(),
+            "worker_model": model,
         })
 
-        # ── Step 7: Build history for frontend ────────────────────────────────
-        # BUG FIX: previously indexed raw BaseMessage objects as pairs using
-        # range(0, len-1, 2) which crashed when history was empty or odd-length.
-        # Now we re-query the DB for the latest history (including the message
-        # we just saved) and build the list directly — safe and always correct.
+        # ── Step 8: Build history for frontend ────────────────────────────────
         latest_rows = await (
             ai_chat_history_collection
             .find(history_query)
