@@ -134,7 +134,7 @@ async def create_payment_intent(
     try:
         session = await asyncio.to_thread(
             stripe.checkout.Session.create,
-            ui_mode="embedded",
+            ui_mode="embedded_page",
             payment_method_types=["card"],
             line_items=[
                 {
@@ -246,24 +246,24 @@ async def stripe_webhook(request: Request):
 
     event_type = event["type"]
     obj = event["data"]["object"]
-    metadata = obj.get("metadata", {})
+    metadata = getattr(obj, "metadata", {})
 
     # ── Handling Course Purchases & Tenant Upgrades ──
     if event_type == "checkout.session.completed" or event_type == "payment_intent.succeeded":
-        session_type = metadata.get("type")
+        session_type = getattr(metadata, "type", None)
         
         if session_type == "course_purchase":
-            course_id = metadata.get("courseId")
-            student_id = metadata.get("studentId")
-            tenant_id = metadata.get("tenantId")
-            stripe_id = obj.get("id")
+            course_id = getattr(metadata, "courseId", None)
+            student_id = getattr(metadata, "studentId", None)
+            tenant_id = getattr(metadata, "tenantId", None)
+            stripe_id = getattr(obj, "id", None)
 
             if course_id and student_id:
                 await _process_successful_payment(course_id, student_id, tenant_id, stripe_id)
 
         elif session_type == "tenant_upgrade" and event_type == "checkout.session.completed":
-            tenant_id = metadata.get("tenantId")
-            plan_id = metadata.get("planId")
+            tenant_id = getattr(metadata, "tenantId", None)
+            plan_id = getattr(metadata, "planId", None)
             if tenant_id and plan_id:
                 from datetime import timedelta
                 now = datetime.utcnow()
@@ -278,7 +278,7 @@ async def stripe_webhook(request: Request):
                             "subscriptionId": ObjectId(plan_id),
                             "subscriptionPlan": plan_doc.get("name"),
                             "subscriptionCategory": plan_doc.get("category", "paid"),
-                            "stripeSubscriptionId": obj.get("subscription"),
+                            "stripeSubscriptionId": getattr(obj, "subscription", None),
                             "subscriptionStartDate": now,
                             "subscriptionExpiryDate": expiry,
                             "updatedAt": now
@@ -290,11 +290,11 @@ async def stripe_webhook(request: Request):
                     await create_payment({
                         "tenantId": tenant_id,
                         "paymentType": "subscription",
-                        "amount": obj.get("amount_total", 0) / 100,
-                        "currency": obj.get("currency", "usd"),
+                        "amount": getattr(obj, "amount_total", 0) / 100,
+                        "currency": getattr(obj, "currency", "usd"),
                         "status": "completed",
-                        "stripeSessionId": obj.get("id"),
-                        "metadata": metadata
+                        "stripeSessionId": getattr(obj, "id", None),
+                        "metadata": dict(metadata) if metadata else {}
                     })
 
     elif event_type == "payment_intent.payment_failed":
@@ -327,17 +327,17 @@ async def confirm_checkout_session(
         raise HTTPException(status_code=400, detail="Invalid checkout session")
 
     # 2. Verify payment is paid
-    if session.get("payment_status") != "paid":
+    if getattr(session, "payment_status", None) != "paid":
         raise HTTPException(
             status_code=400,
             detail=f"Payment not completed yet (status: {session.get('payment_status')})"
         )
 
     # 3. Extract metadata stored when session was created
-    metadata = session.get("metadata", {})
-    course_id = metadata.get("courseId")
-    student_id = metadata.get("studentId")
-    tenant_id = metadata.get("tenantId")
+    metadata = getattr(session, "metadata", {})
+    course_id = getattr(metadata, "courseId", None)
+    student_id = getattr(metadata, "studentId", None)
+    tenant_id = getattr(metadata, "tenantId", None)
 
     if not course_id or not student_id:
         raise HTTPException(status_code=400, detail="Session metadata is incomplete")
@@ -400,10 +400,10 @@ async def confirm_payment(
     if intent.status != "succeeded":
         raise HTTPException(status_code=400, detail="Payment not completed")
 
-    metadata = intent.get("metadata", {})
-    course_id = metadata.get("courseId")
-    student_id = metadata.get("studentId")
-    tenant_id = metadata.get("tenantId")
+    metadata = getattr(intent, "metadata", {})
+    course_id = getattr(metadata, "courseId", None)
+    student_id = getattr(metadata, "studentId", None)
+    tenant_id = getattr(metadata, "tenantId", None)
     student_profile = await _get_current_student_profile(current_user)
     resolved_student = await _resolve_student_profile(student_id, tenant_id)
     if not resolved_student:

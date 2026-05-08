@@ -170,6 +170,8 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
             {"_id": tenant_id},
             {"$set": {
                 "subscriptionId": ObjectId(req.planId),
+                "subscriptionPlan": plan.get("name"),
+                "subscriptionCategory": plan.get("category", "free"),
                 "stripeSubscriptionId": None,  # Remove the ID since they are now on free
                 "subscriptionStartDate": now,
                 "subscriptionExpiryDate": expiry,
@@ -185,7 +187,7 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
 
     try:
         session = stripe.checkout.Session.create(
-            ui_mode="embedded",
+            ui_mode="embedded_page",
             payment_method_types=['card'],
             line_items=[{
                 'price_data': {
@@ -235,16 +237,14 @@ async def verify_billing_session(req: VerifySessionRequest, current_user=Depends
         if session.status != "complete":
             return {"success": False, "message": f"Session not completed (status: {session.status})"}
 
-        # Access metadata via attribute (StripeObject)
-        metadata = session.metadata or {}
-        print(f"[verify-session] metadata={dict(metadata) if metadata else 'empty'}")
-
-        session_type = metadata.get("type", None)
+        # Access metadata safely
+        metadata = getattr(session, "metadata", {})
+        session_type = getattr(metadata, "type", None)
         if session_type != "tenant_upgrade":
             return {"success": False, "message": f"Not a tenant upgrade session (type: {session_type})"}
 
-        tenant_id_from_meta = metadata.get("tenantId")
-        plan_id = metadata.get("planId")
+        tenant_id_from_meta = getattr(metadata, "tenantId", None)
+        plan_id = getattr(metadata, "planId", None)
         print(f"[verify-session] tenant_id={tenant_id_from_meta}, plan_id={plan_id}")
 
         if not tenant_id_from_meta or not plan_id:
