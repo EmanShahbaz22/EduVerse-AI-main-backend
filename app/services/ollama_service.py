@@ -485,16 +485,16 @@ Each option must be a full answer phrase, never a single letter.
 
 _TUTOR_PROMPT = """\
 You are a helpful AI study assistant for students on the EduVerse learning platform.
-Answer the student's question clearly and concisely.
 
 Course Context: {context}
 Student Question: {message}
 
-Rules:
-- Be encouraging and educational.
-- Use simple language appropriate for students.
-- Keep answers focused and relevant to the course topic.
-- If you don't know, say so honestly.
+STRICT RULES:
+1. If the student says "Hello", "Hi", or just greets you, respond with a SHORT greeting and ask how you can help. (Maximum 15 words for greetings).
+2. DO NOT give long lists of topics or deep explanations unless the student asks a specific question.
+3. Keep all answers clear and concisely under 60 words unless the topic is very complex.
+4. Use simple, direct language.
+5. If you don't know the answer based on the context, say so honestly.
 """
 
 
@@ -661,8 +661,8 @@ async def run_model_benchmark(test_prompts: list[dict]) -> dict[str, Any]:
         model_results = []
 
         for prompt_cfg in test_prompts:
-            task = prompt_cfg.get("task_type", "lesson")
-            topic = prompt_cfg.get("topic", prompt_cfg.get("question", "General Knowledge"))
+            task = str(prompt_cfg.get("task_type", "lesson"))
+            topic = str(prompt_cfg.get("topic") or prompt_cfg.get("question") or "General Knowledge")
             t0 = time.time()
             generated_text = ""
             try:
@@ -680,7 +680,7 @@ async def run_model_benchmark(test_prompts: list[dict]) -> dict[str, Any]:
                     generated_text = str(content_dict)
                 else:  # tutor
                     generated_text = await chat_tutor(
-                        prompt_cfg.get("question", topic),
+                        str(prompt_cfg.get("question") or topic),
                         model_override=model_name
                     )
                     content_dict = {"response": generated_text}
