@@ -43,8 +43,9 @@ def get_certificate_path(file_id: str) -> str:
     return os.path.join(
         os.path.dirname(__file__),
         "..",
+        "..",
         "uploads",
-        "certificates",
+        "certificate",
         file_id,
     )
 
@@ -61,7 +62,7 @@ async def generate_certificate_file(student_name: str, course_name: str) -> str:
     import uuid
 
     file_id = f"cert_{uuid.uuid4().hex}.pdf"
-    upload_dir = os.path.join(os.path.dirname(__file__), "..", "uploads", "certificates")
+    upload_dir = os.path.join(os.path.dirname(__file__), "..", "..", "uploads", "certificate")
     os.makedirs(upload_dir, exist_ok=True)
     file_path = os.path.join(upload_dir, file_id)
     issued_on = datetime.utcnow().strftime("%B %d, %Y")
@@ -73,139 +74,147 @@ async def generate_certificate_file(student_name: str, course_name: str) -> str:
         pdf.add_page()
         pdf.set_auto_page_break(False)
 
-        pdf.set_fill_color(248, 250, 252)
+        # 1. Background and Border
+        pdf.set_fill_color(252, 253, 255)  # Soft white
         pdf.rect(0, 0, 297, 210, style="F")
 
+        # Outer Decorative Border (Teal)
         pdf.set_draw_color(35, 169, 151)
-        pdf.set_line_width(2)
-        pdf.rect(8, 8, 281, 194)
+        pdf.set_line_width(1.5)
+        pdf.rect(10, 10, 277, 190)
 
-        pdf.set_draw_color(226, 232, 240)
-        pdf.set_line_width(0.7)
+        # Inner Thin Border (Gold/Light Teal)
+        pdf.set_draw_color(212, 175, 55) # Gold-ish
+        pdf.set_line_width(0.5)
         pdf.rect(14, 14, 269, 182)
 
-        pdf.set_fill_color(35, 169, 151)
-        pdf.rect(14, 14, 269, 5, style="F")
+        # 2. Header
+        pdf.ln(25)
+        pdf.set_font("helvetica", "B", 32)
+        pdf.set_text_color(24, 31, 57) # Deep Navy
+        pdf.cell(0, 15, "EduVerse AI", align="C", new_x="LMARGIN", new_y="NEXT")
+        
+        pdf.set_font("helvetica", "B", 14)
+        pdf.set_text_color(35, 169, 151) # Teal
+        pdf.cell(0, 10, "CERTIFICATE OF COMPLETION", align="C", new_x="LMARGIN", new_y="NEXT")
 
-        pdf.set_font("helvetica", "B", 22)
+        # 3. Content Body
+        pdf.ln(15)
+        pdf.set_font("helvetica", "", 16)
+        pdf.set_text_color(100, 116, 139) # Gray
+        pdf.cell(0, 10, "This is to certify that", align="C", new_x="LMARGIN", new_y="NEXT")
+
+        pdf.ln(5)
+        pdf.set_font("helvetica", "B", 42)
         pdf.set_text_color(24, 31, 57)
-        pdf.ln(22)
-        pdf.cell(0, 12, "EduVerse", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 20, student_name, align="C", new_x="LMARGIN", new_y="NEXT")
 
-        pdf.set_font("helvetica", "", 14)
+        pdf.ln(5)
+        pdf.set_font("helvetica", "", 16)
         pdf.set_text_color(100, 116, 139)
-        pdf.cell(0, 8, "Certificate of Achievement", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, "has successfully completed the course", align="C", new_x="LMARGIN", new_y="NEXT")
 
-        pdf.ln(8)
-        pdf.set_font("helvetica", "B", 34)
-        pdf.set_text_color(24, 31, 57)
-        pdf.cell(0, 18, "This certificate is presented to", align="C", new_x="LMARGIN", new_y="NEXT")
-
-        pdf.ln(6)
-        pdf.set_font("helvetica", "B", 30)
+        pdf.ln(5)
+        pdf.set_font("helvetica", "B", 28)
         pdf.set_text_color(35, 169, 151)
-        pdf.cell(0, 16, student_name, align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 15, f'"{course_name}"', align="C")
 
-        pdf.ln(6)
-        pdf.set_font("helvetica", "", 15)
-        pdf.set_text_color(71, 85, 105)
-        pdf.cell(
-            0,
-            9,
-            "for successfully completing the learning experience",
-            align="C",
-            new_x="LMARGIN",
-            new_y="NEXT",
-        )
-
-        pdf.ln(4)
-        pdf.set_font("helvetica", "B", 24)
-        pdf.set_text_color(24, 31, 57)
-        pdf.multi_cell(0, 12, course_name, align="C")
-
-        pdf.ln(12)
-        pdf.set_font("helvetica", "", 13)
-        pdf.set_text_color(100, 116, 139)
-        pdf.cell(
-            0,
-            8,
-            "Recognized by EduVerse for demonstrated course completion.",
-            align="C",
-            new_x="LMARGIN",
-            new_y="NEXT",
-        )
-
-        pdf.set_y(154)
-        pdf.set_draw_color(203, 213, 225)
-        pdf.line(36, 174, 116, 174)
-        pdf.line(181, 174, 261, 174)
-
+        # 4. Footer Section (Signatures/Date)
+        pdf.set_y(155)
+        
+        # Issued By (Left)
         pdf.set_font("helvetica", "B", 12)
         pdf.set_text_color(24, 31, 57)
-        pdf.set_xy(36, 176)
-        pdf.cell(80, 6, "Issued by EduVerse", align="C")
-        pdf.set_xy(181, 176)
-        pdf.cell(80, 6, "Completion date", align="C")
-
-        pdf.set_font("helvetica", "", 11)
-        pdf.set_text_color(100, 116, 139)
-        pdf.set_xy(36, 183)
-        pdf.cell(80, 6, "Learning Platform", align="C")
-        pdf.set_xy(181, 183)
-        pdf.cell(80, 6, issued_on, align="C")
-
-        pdf.set_xy(0, 192)
-        pdf.set_font("helvetica", "", 9)
+        pdf.set_xy(40, 170)
+        pdf.cell(80, 7, "EduVerse Authority", align="C")
+        pdf.line(40, 168, 120, 168) # Signature Line
+        pdf.set_xy(40, 177)
+        pdf.set_font("helvetica", "", 10)
         pdf.set_text_color(148, 163, 184)
-        pdf.cell(0, 6, f"Credential ID: {file_id.replace('.pdf', '').upper()}", align="C")
+        pdf.cell(80, 5, "Verified Digital Credential", align="C")
 
+        # Date (Right)
+        pdf.set_font("helvetica", "B", 12)
+        pdf.set_text_color(24, 31, 57)
+        pdf.set_xy(177, 170)
+        pdf.cell(80, 7, issued_on, align="C")
+        pdf.line(177, 168, 257, 168) # Signature Line
+        pdf.set_xy(177, 177)
+        pdf.set_font("helvetica", "", 10)
+        pdf.set_text_color(148, 163, 184)
+        pdf.cell(80, 5, "Completion Date", align="C")
+
+        # 5. Credential ID (Bottom Center)
+        pdf.set_y(192)
+        pdf.set_font("helvetica", "I", 8)
+        pdf.set_text_color(148, 163, 184)
         pdf.output(file_path)
     except ModuleNotFoundError:
         def escape(text: str) -> str:
             return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
+        # Modern Coursera/Google Style Layout (842 units wide, 595 units tall)
         commands = [
-            "0.97 0.98 0.99 rg",
-            "0 0 842 595 re f",
-            "0.14 0.66 0.59 RG",
+            "1.0 1.0 1.0 rg", "0 0 842 595 re f", # White background
+            
+            # 1. The Sidebar (Left side) - Using Light Brand Teal
+            "0.92 0.98 0.97 rg", # Very light mint/teal sidebar
+            "0 0 180 595 re f",
+            
+            "0.14 0.66 0.59 rg", # Main Brand Teal Header in sidebar
+            "0 400 180 80 re f",
+            
+            # 2. Main Content Area
+            "0.14 0.66 0.59 RG", # Teal accent line
             "3 w",
-            "24 24 794 547 re S",
-            "0.89 0.91 0.94 RG",
-            "1 w",
-            "38 38 766 519 re S",
-            "0.14 0.66 0.59 rg",
-            "38 545 766 10 re f",
+            "200 40 m 800 40 l S", # Bottom accent line
         ]
 
+        # Coordinates for the Modern Layout
+        # Sidebar elements (x < 180)
+        # Main content elements (x > 200)
         lines = [
-            (365, 520, 18, "EduVerse"),
-            (300, 488, 13, "Certificate of Achievement"),
-            (205, 438, 25, "This certificate is presented to"),
-            (255, 396, 22, student_name),
-            (170, 352, 13, "for successfully completing the learning experience"),
-            (210, 315, 18, course_name),
-            (155, 274, 11, "Recognized by EduVerse for demonstrated course completion."),
-            (74, 124, 10, "Issued by EduVerse"),
-            (504, 124, 10, "Completion date"),
-            (84, 106, 9, "Learning Platform"),
-            (520, 106, 9, issued_on),
-            (250, 62, 8, f"Credential ID: {file_id.replace('.pdf', '').upper()}"),
+            # Sidebar Text
+            (40, 435, 16, "EduVerse"), # In the dark box
+            
+            # Main Content (Right Side)
+            (220, 500, 34, "EduVerse AI"),
+            (220, 460, 11, issued_on),
+            (220, 420, 28, student_name), # Large Bold Name
+            (220, 395, 14, "has successfully completed the online curriculum for"),
+            (220, 350, 36, course_name), # Extra Large Course Title
+            
+            (220, 280, 11, "Those who earn the EduVerse AI Certificate have demonstrated"),
+            (220, 265, 11, "advanced proficiency in the core concepts and practical"),
+            (220, 250, 11, "applications of the curriculum, verified by our AI validation."),
+            
+            # Signature Area (Bottom Right)
+            (600, 120, 14, "EduVerse Authority"),
+            (600, 100, 10, "Global Director of Learning"),
+            (600, 85, 9, f"ID: {file_id.replace('.pdf', '').upper()}"),
         ]
 
         content_lines = commands + ["BT"]
         for x, y, size, text in lines:
+            # Special color for sidebar header
+            if y == 435:
+                content_lines.append("1.0 1.0 1.0 rg") # White text for sidebar header
+            elif x < 180:
+                content_lines.append("0.3 0.4 0.5 rg") # Dark grey for sidebar details
+            else:
+                content_lines.append("0.1 0.15 0.25 rg") # Deep Navy for main text
+            
             content_lines.append(f"/F1 {size} Tf")
             content_lines.append(f"1 0 0 1 {x} {y} Tm")
             content_lines.append(f"({escape(text)}) Tj")
         content_lines.append("ET")
-        content_lines.extend(
-            [
-                "0.80 0.85 0.89 RG",
-                "1 w",
-                "74 118 m 234 118 l S",
-                "504 118 m 664 118 l S",
-            ]
-        )
+        
+        # Add Signature Line
+        content_lines.extend([
+            "0.14 0.66 0.59 RG", # Brand Teal
+            "1 w",
+            "600 140 m 780 140 l S", # Signature line
+        ])
         stream = "\n".join(content_lines).encode("latin-1", "replace")
 
         objects = [

@@ -125,7 +125,7 @@ async def get_certificate_file(file_id: str, name: str | None = None):
     if not CERTIFICATE_FILE_ID_PATTERN.match(file_id):
         raise HTTPException(status_code=404, detail="File not found")
     
-    path = os.path.join(UPLOAD_DIR, "certificates", file_id)
+    path = os.path.join(UPLOAD_DIR, "certificate", file_id)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Certificate not found")
         
