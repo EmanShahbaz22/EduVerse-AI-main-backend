@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import asyncio
 from dotenv import load_dotenv
 from app.schemas.teachers import TeacherUpdate
@@ -147,18 +147,28 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
 
     price = plan.get("pricePerMonth", 0)
     
-    # Free/downgrade plans: apply instantly without Stripe
-    if price <= 0:
-        now = datetime.utcnow()
+    old_tenant = await db.tenants.find_one({"_id": tenant_id})
+    if not old_tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    old_plan_id = old_tenant.get("subscriptionId")
+    old_price = 0
+    if old_plan_id:
+        old_plan = await db.subscriptionPlans.find_one({"_id": old_plan_id})
+        if old_plan:
+            old_price = old_plan.get("pricePerMonth", 0)
+
+    # Free/downgrade plans: apply instantly without Stripe if new price <= old price
+    if price <= 0 or price <= old_price:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         billing_cycle = plan.get("billingCycle", "monthly")
         expiry = now + timedelta(days=365) if billing_cycle == "yearly" else now + timedelta(days=30)
         
-        # FIX: Check if they have an active Stripe subscription and cancel it
-        old_tenant = await db.tenants.find_one({"_id": tenant_id})
+        # Cancel active Stripe subscription if downgrading
         old_stripe_id = old_tenant.get("stripeSubscriptionId")
         if old_stripe_id:
             try:
-                # Cancel the subscription in Stripe so they aren't billed again
+                # Cancel the subscription in Stripe so they aren't billed the higher amount again
                 await asyncio.to_thread(
                     stripe.Subscription.delete, old_stripe_id
                 )
@@ -171,22 +181,27 @@ async def create_billing_checkout(req: CheckoutPlanRequest, current_user=Depends
             {"$set": {
                 "subscriptionId": ObjectId(req.planId),
                 "subscriptionPlan": plan.get("name"),
-                "subscriptionCategory": plan.get("category", "free"),
-                "stripeSubscriptionId": None,  # Remove the ID since they are now on free
+                "subscriptionCategory": plan.get("category", "free" if price <= 0 else "paid"),
+                "stripeSubscriptionId": None,  # Remove the ID since they downgraded (requires new setup on upgrade)
                 "subscriptionStartDate": now,
                 "subscriptionExpiryDate": expiry,
                 "updatedAt": now
             }}
         )
-        return {"success": True, "message": f"Switched to {plan['name']}"}
+        return {"success": True, "message": f"Downgraded to {plan['name']} successfully!"}
 
     # Map billingCycle to Stripe interval
-    cycle_map = {"monthly": "month", "yearly": "year", "weekly": "week"}
+    cycle_map: dict[str, str] = {"monthly": "month", "yearly": "year", "weekly": "week"}
     raw_cycle = plan.get("billingCycle", "monthly").lower()
-    stripe_interval = cycle_map.get(raw_cycle, "month")
+    from typing import Literal, cast
+    stripe_interval = cast(
+        Literal["day", "month", "week", "year"],
+        cycle_map.get(raw_cycle, "month")
+    )
 
     try:
-        session = stripe.checkout.Session.create(
+        session = await asyncio.to_thread(
+            stripe.checkout.Session.create,
             ui_mode="embedded_page",
             payment_method_types=['card'],
             line_items=[{
@@ -225,84 +240,77 @@ async def verify_billing_session(req: VerifySessionRequest, current_user=Depends
     import stripe
     import os
     import asyncio
-    from datetime import timedelta
+    import logging
 
+    logger = logging.getLogger(__name__)
+    logger.info(f"[verify-session] Received request to verify session ID: {req.session_id}")
     stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
     try:
         session = await asyncio.to_thread(
-            stripe.checkout.Session.retrieve, req.session_id
+            stripe.checkout.Session.retrieve,
+            req.session_id,
+            expand=["subscription"]
         )
-        print(f"[verify-session] session.id={session.id}, status={session.status}")
+        session_status = getattr(session, "status", None)
+        payment_status = getattr(session, "payment_status", None)
+        logger.info(f"[verify-session] id={session.id}, status={session_status}, payment_status={payment_status}")
 
-        if session.status != "complete":
-            return {"success": False, "message": f"Session not completed (status: {session.status})"}
+        # For subscriptions: status='complete' is the reliable indicator
+        # payment_status can be 'no_payment_required' for trials/free periods
+        if session_status != "complete":
+            logger.info(f"[verify-session] REJECTED — session not complete")
+            return {"success": False, "message": f"Payment session not yet complete (status: {session_status})"}
 
-        # Access metadata safely
-        metadata = getattr(session, "metadata", {})
-        session_type = getattr(metadata, "type", None)
+        # Access metadata safely — StripeObject dict conversion changed in recent SDKs
+        raw_meta = getattr(session, "metadata", {})
+        metadata = raw_meta._data if hasattr(raw_meta, "_data") else (dict(raw_meta) if isinstance(raw_meta, dict) else {})
+        session_type = metadata.get("type")
+        logger.info(f"[verify-session] metadata={metadata}")
+
         if session_type != "tenant_upgrade":
-            return {"success": False, "message": f"Not a tenant upgrade session (type: {session_type})"}
+            return {"success": False, "message": f"Not a tenant upgrade session (type={session_type})"}
 
-        tenant_id_from_meta = getattr(metadata, "tenantId", None)
-        plan_id = getattr(metadata, "planId", None)
-        print(f"[verify-session] tenant_id={tenant_id_from_meta}, plan_id={plan_id}")
+        tenant_id_from_meta = metadata.get("tenantId")
+        plan_id = metadata.get("planId")
 
         if not tenant_id_from_meta or not plan_id:
             return {"success": False, "message": "Missing tenantId or planId in session metadata"}
 
         tenant_oid_ctx = _tenant_oid(current_user)
-        print(f"[verify-session] current_user tenant_oid={tenant_oid_ctx}, metadata tenant_id={tenant_id_from_meta}")
+        logger.info(f"[verify-session] ctx_tenant={tenant_oid_ctx}, meta_tenant={tenant_id_from_meta}")
 
         if str(tenant_oid_ctx) != tenant_id_from_meta:
-            return {"success": False, "message": "Tenant mismatch"}
+            return {"success": False, "message": f"Tenant mismatch: {tenant_oid_ctx} vs {tenant_id_from_meta}"}
 
-        tenant_oid = ObjectId(tenant_id_from_meta)
-        tenant = await db.tenants.find_one({"_id": tenant_oid})
+        tenant = await db.tenants.find_one({"_id": ObjectId(tenant_id_from_meta)})
         if not tenant:
             return {"success": False, "message": "Tenant not found"}
 
-        # Apply the upgrade
-        now = datetime.utcnow()
-        plan_doc = await db.subscriptionPlans.find_one({"_id": ObjectId(plan_id)})
-        if not plan_doc:
-            return {"success": False, "message": "Subscription plan not found"}
-            
-        billing_cycle = plan_doc.get("billingCycle", "monthly")
-        expiry = now + timedelta(days=365) if billing_cycle == "yearly" else now + timedelta(days=30)
+        # Retrieve subscription ID from expanded object
+        sub_obj = getattr(session, "subscription", None)
+        stripe_sub_id = sub_obj.id if sub_obj and hasattr(sub_obj, "id") else (sub_obj if isinstance(sub_obj, str) else None)
+        amount_total = getattr(session, "amount_total", 0) or 0
+        currency = getattr(session, "currency", "usd") or "usd"
 
-        stripe_sub_id = session.subscription  # attribute access
-        print(f"[verify-session] Updating tenant {tenant_id_from_meta} -> plan {plan_id}, stripe_sub={stripe_sub_id}")
-
-        result = await db.tenants.update_one(
-            {"_id": tenant_oid},
-            {"$set": {
-                "subscriptionId": ObjectId(plan_id),
-                "subscriptionPlan": plan_doc.get("name"),
-                "subscriptionCategory": plan_doc.get("category", "paid"),
-                "stripeSubscriptionId": stripe_sub_id,
-                "subscriptionStartDate": now,
-                "subscriptionExpiryDate": expiry,
-                "updatedAt": now
-            }}
+        from app.utils.stripe_helpers import process_tenant_upgrade
+        result = await process_tenant_upgrade(
+            tenant_id=tenant_id_from_meta,
+            plan_id=plan_id,
+            stripe_sub_id=stripe_sub_id,
+            session_id=session.id,
+            amount_total=amount_total,
+            currency=currency,
+            metadata=metadata
         )
-        print(f"[verify-session] Update: matched={result.matched_count}, modified={result.modified_count}")
-
-        # Record the payment for the admin history
-        from app.crud.payments import create_payment
-        await create_payment({
-            "tenantId": tenant_id_from_meta,
-            "paymentType": "subscription",
-            "amount": session.amount_total / 100 if session.amount_total else 0,
-            "currency": session.currency or "usd",
-            "status": "completed",
-            "stripeSessionId": session.id,
-            "metadata": dict(metadata) if metadata else {}
-        })
-
-        return {"success": True, "message": "Subscription upgraded successfully!"}
+        logger.info(f"[verify-session] result={result}")
+        return result
+    except stripe.error.StripeError as e:
+        logger.error(f"[verify-session] StripeError: {e}")
+        raise HTTPException(status_code=400, detail="Invalid checkout session")
     except Exception as e:
         import traceback
-        traceback.print_exc()
+        logger.error(f"[verify-session] UNHANDLED EXCEPTION: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 def _tenant_oid(current_user: dict) -> ObjectId:
@@ -363,10 +371,12 @@ async def update_system_settings(data: dict, current_user=Depends(get_current_us
         updates["tenantLogoUrl"] = data["tenantLogoUrl"]
     
     if updates:
-        updates["updatedAt"] = datetime.utcnow()
+        updates["updatedAt"] = datetime.now(timezone.utc).replace(tzinfo=None)
         await db.tenants.update_one({"_id": tenant_oid}, {"$set": updates})
         
     updated_tenant = await db.tenants.find_one({"_id": tenant_oid})
+    if not updated_tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
     return {
         "tenantName": updated_tenant.get("tenantName", ""),
         "tenantLogoUrl": updated_tenant.get("tenantLogoUrl", "")
@@ -429,14 +439,18 @@ async def update_student(
     if user_updates:
         if user_updates.get("email"):
             user_updates["email"] = user_updates["email"].lower()
-        user_updates["updatedAt"] = datetime.utcnow()
+        user_updates["updatedAt"] = datetime.now(timezone.utc).replace(tzinfo=None)
         await db.users.update_one({"_id": student["userId"]}, {"$set": user_updates})
     if student_updates:
-        student_updates["updatedAt"] = datetime.utcnow()
+        student_updates["updatedAt"] = datetime.now(timezone.utc).replace(tzinfo=None)
         await db.students.update_one({"_id": student_oid}, {"$set": student_updates})
 
     updated_student = await db.students.find_one({"_id": student_oid})
+    if not updated_student:
+        raise HTTPException(status_code=404, detail="Student not found after update")
     updated_user = await db.users.find_one({"_id": updated_student["userId"]})
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found after update")
 
     return {
         "id": str(updated_student["_id"]),
@@ -470,7 +484,7 @@ async def admin_update_teacher(
     teacher = await db.teachers.find_one({"_id": teacher_oid, "tenantId": tenant_oid})
     if not teacher:
         raise HTTPException(404, "Teacher not found")
-    updated = await crud_update_teacher(id, updates.dict(exclude_unset=True))
+    updated = await crud_update_teacher(id, updates.model_dump(exclude_unset=True))
     if not updated:
         raise HTTPException(404, "Teacher not found")
     return updated
@@ -503,10 +517,12 @@ async def update_course(course_id: str, data: dict, current_user=Depends(get_cur
 
     update_data = {k: v for k, v in data.items() if v is not None}
     if update_data:
-        update_data["updatedAt"] = datetime.utcnow()
+        update_data["updatedAt"] = datetime.now(timezone.utc).replace(tzinfo=None)
         await db.courses.update_one({"_id": course_oid}, {"$set": update_data})
 
     updated_course = await db.courses.find_one({"_id": course_oid, "tenantId": tenant_oid})
+    if not updated_course:
+        raise HTTPException(status_code=404, detail="Course not found after update")
 
     return {
         "id": str(updated_course["_id"]),

@@ -1,0 +1,208 @@
+2026-05-16 18:31:23 | INFO     | app.main | Starting EduVerse AI Backend...
+2026-05-16 18:31:23 | INFO     | app.db.database | MongoDB connection verified (ping OK).
+2026-05-16 18:31:25 | INFO     | app.db.database | All MongoDB indexes verified/created successfully.
+2026-05-16 18:31:25 | INFO     | app.main | active_worker_model already set to 'llama3.2:3b'.
+2026-05-16 18:31:25 | INFO     | app.main | Startup complete — server is ready.
+2026-05-16 18:31:45 | INFO     | app.main | MongoDB connection closed. Server stopped.
+2026-05-16 18:31:48 | INFO     | app.main | Starting EduVerse AI Backend...
+2026-05-16 18:31:49 | INFO     | app.db.database | MongoDB connection verified (ping OK).
+2026-05-16 18:31:50 | INFO     | app.db.database | All MongoDB indexes verified/created successfully.
+2026-05-16 18:31:50 | INFO     | app.main | active_worker_model already set to 'llama3.2:3b'.
+2026-05-16 18:31:50 | INFO     | app.main | Startup complete — server is ready.
+2026-05-16 18:38:39 | INFO     | stripe | message='Request to Stripe api' method=post url=https://api.stripe.com/v1/checkout/sessions
+2026-05-16 18:38:40 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions response_code=200
+2026-05-16 18:39:14 | INFO     | app.routers.roles.admins | [verify-session] Received request to verify session ID: cs_test_a1mxWenFn29OWN4uQ2Ba75cXYkuQXn0RDKDynRUlZ13q2JkPaaWoV4qkV4
+2026-05-16 18:39:14 | INFO     | stripe | message='Request to Stripe api' method=get url=https://api.stripe.com/v1/checkout/sessions/cs_test_a1mxWenFn29OWN4uQ2Ba75cXYkuQXn0RDKDynRUlZ13q2JkPaaWoV4qkV4?expand[0]=subscription
+2026-05-16 18:39:15 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions/cs_test_a1mxWenFn29OWN4uQ2Ba75cXYkuQXn0RDKDynRUlZ13q2JkPaaWoV4qkV4?expand[0]=subscription response_code=200
+2026-05-16 18:39:15 | INFO     | app.routers.roles.admins | [verify-session] id=cs_test_a1mxWenFn29OWN4uQ2Ba75cXYkuQXn0RDKDynRUlZ13q2JkPaaWoV4qkV4, status=complete, payment_status=paid
+2026-05-16 18:39:15 | INFO     | app.routers.roles.admins | [verify-session] metadata={'planId': '69c9cfeebdf988f605f1ac12', 'tenantId': '69c939c248b8f459967a9da0', 'type': 'tenant_upgrade'}
+2026-05-16 18:39:15 | INFO     | app.routers.roles.admins | [verify-session] ctx_tenant=69c939c248b8f459967a9da0, meta_tenant=69c939c248b8f459967a9da0
+2026-05-16 18:39:15 | INFO     | app.utils.stripe_helpers | [StripeUpgrade] Upgrading tenant 69c939c248b8f459967a9da0 to plan Enterprise
+2026-05-16 18:39:15 | INFO     | app.routers.roles.admins | [verify-session] result={'success': True, 'message': 'Subscription upgraded successfully!'}
+2026-05-16 18:47:23 | INFO     | stripe | message='Request to Stripe api' method=post url=https://api.stripe.com/v1/checkout/sessions
+2026-05-16 18:47:25 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions response_code=200
+2026-05-16 18:47:59 | INFO     | app.routers.roles.admins | [verify-session] Received request to verify session ID: cs_test_a11dhxAyRVd1FWxfdw8HyGtWSMxUVHyIhZC77U9E61X5OmSBppEoLzDY2q
+2026-05-16 18:47:59 | INFO     | stripe | message='Request to Stripe api' method=get url=https://api.stripe.com/v1/checkout/sessions/cs_test_a11dhxAyRVd1FWxfdw8HyGtWSMxUVHyIhZC77U9E61X5OmSBppEoLzDY2q?expand[0]=subscription
+2026-05-16 18:47:59 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions/cs_test_a11dhxAyRVd1FWxfdw8HyGtWSMxUVHyIhZC77U9E61X5OmSBppEoLzDY2q?expand[0]=subscription response_code=200
+2026-05-16 18:47:59 | INFO     | app.routers.roles.admins | [verify-session] id=cs_test_a11dhxAyRVd1FWxfdw8HyGtWSMxUVHyIhZC77U9E61X5OmSBppEoLzDY2q, status=complete, payment_status=paid
+2026-05-16 18:47:59 | INFO     | app.routers.roles.admins | [verify-session] metadata={'planId': '69c9cfeebdf988f605f1ac11', 'tenantId': '69c939c248b8f459967a9da0', 'type': 'tenant_upgrade'}
+2026-05-16 18:47:59 | INFO     | app.routers.roles.admins | [verify-session] ctx_tenant=69c939c248b8f459967a9da0, meta_tenant=69c939c248b8f459967a9da0
+2026-05-16 18:47:59 | INFO     | app.utils.stripe_helpers | [StripeUpgrade] Upgrading tenant 69c939c248b8f459967a9da0 to plan Professional
+2026-05-16 18:48:00 | INFO     | app.routers.roles.admins | [verify-session] result={'success': True, 'message': 'Subscription upgraded successfully!'}
+2026-05-16 18:48:04 | INFO     | stripe | message='Request to Stripe api' method=delete url=https://api.stripe.com/v1/subscriptions/sub_1TXiZLRvJAcXg89Cao0Z4AYw
+2026-05-16 18:48:04 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/subscriptions/sub_1TXiZLRvJAcXg89Cao0Z4AYw response_code=200
+2026-05-16 18:49:20 | INFO     | stripe | message='Request to Stripe api' method=post url=https://api.stripe.com/v1/checkout/sessions
+2026-05-16 18:49:21 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions response_code=200
+2026-05-16 18:49:55 | INFO     | app.routers.roles.admins | [verify-session] Received request to verify session ID: cs_test_a1RvqxkgftUoTIT5KQXwYVvlVyMtglrE1OCaIvUhlqpJzCDO5NmTX5oYDC
+2026-05-16 18:49:55 | INFO     | stripe | message='Request to Stripe api' method=get url=https://api.stripe.com/v1/checkout/sessions/cs_test_a1RvqxkgftUoTIT5KQXwYVvlVyMtglrE1OCaIvUhlqpJzCDO5NmTX5oYDC?expand[0]=subscription
+2026-05-16 18:49:56 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions/cs_test_a1RvqxkgftUoTIT5KQXwYVvlVyMtglrE1OCaIvUhlqpJzCDO5NmTX5oYDC?expand[0]=subscription response_code=200
+2026-05-16 18:49:56 | INFO     | app.routers.roles.admins | [verify-session] id=cs_test_a1RvqxkgftUoTIT5KQXwYVvlVyMtglrE1OCaIvUhlqpJzCDO5NmTX5oYDC, status=complete, payment_status=paid
+2026-05-16 18:49:56 | INFO     | app.routers.roles.admins | [verify-session] metadata={'planId': '69c9cfeebdf988f605f1ac12', 'tenantId': '69c939c248b8f459967a9da0', 'type': 'tenant_upgrade'}
+2026-05-16 18:49:56 | INFO     | app.routers.roles.admins | [verify-session] ctx_tenant=69c939c248b8f459967a9da0, meta_tenant=69c939c248b8f459967a9da0
+2026-05-16 18:49:56 | INFO     | app.utils.stripe_helpers | [StripeUpgrade] Upgrading tenant 69c939c248b8f459967a9da0 to plan Enterprise
+2026-05-16 18:49:57 | INFO     | app.routers.roles.admins | [verify-session] result={'success': True, 'message': 'Subscription upgraded successfully!'}
+2026-05-16 18:50:10 | INFO     | stripe | message='Request to Stripe api' method=post url=https://api.stripe.com/v1/checkout/sessions
+2026-05-16 18:50:11 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions response_code=200
+2026-05-16 18:57:45 | INFO     | app.main | MongoDB connection closed. Server stopped.
+2026-05-16 18:57:51 | INFO     | app.main | Starting EduVerse AI Backend...
+2026-05-16 18:58:24 | CRITICAL | app.main | Startup failed: Cannot reach MongoDB — check your MONGO_URI and network. Error: The resolution lifetime expired after 32.005 seconds: Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.
+2026-05-16 19:00:24 | INFO     | app.main | Starting EduVerse AI Backend...
+2026-05-16 19:00:57 | CRITICAL | app.main | Startup failed: Cannot reach MongoDB — check your MONGO_URI and network. Error: The resolution lifetime expired after 32.003 seconds: Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.
+2026-05-16 20:11:23 | INFO     | app.main | Starting EduVerse AI Backend...
+2026-05-16 20:11:57 | CRITICAL | app.main | Startup failed: Cannot reach MongoDB — check your MONGO_URI and network. Error: The resolution lifetime expired after 32.003 seconds: Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.; Server Do53:192.168.43.212@53 answered The DNS operation timed out.
+2026-05-16 20:12:25 | INFO     | app.main | Starting EduVerse AI Backend...
+2026-05-16 20:12:26 | INFO     | app.db.database | MongoDB connection verified (ping OK).
+2026-05-16 20:12:28 | INFO     | app.db.database | All MongoDB indexes verified/created successfully.
+2026-05-16 20:12:28 | INFO     | app.main | active_worker_model already set to 'llama3.2:3b'.
+2026-05-16 20:12:28 | INFO     | app.main | Startup complete — server is ready.
+2026-05-16 20:13:28 | INFO     | stripe | message='Request to Stripe api' method=delete url=https://api.stripe.com/v1/subscriptions/sub_1TXibERvJAcXg89CXy3BRgtn
+2026-05-16 20:13:30 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/subscriptions/sub_1TXibERvJAcXg89CXy3BRgtn response_code=200
+2026-05-16 20:13:41 | INFO     | stripe | message='Request to Stripe api' method=post url=https://api.stripe.com/v1/checkout/sessions
+2026-05-16 20:13:42 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions response_code=200
+2026-05-16 20:14:12 | INFO     | app.routers.roles.admins | [verify-session] Received request to verify session ID: cs_test_a1Lo4eXAmbxQEfK8xygEsnGROQYCx72VZAPFIC5xLNmyuOiyp0aBeM6UXF
+2026-05-16 20:14:12 | INFO     | stripe | message='Request to Stripe api' method=get url=https://api.stripe.com/v1/checkout/sessions/cs_test_a1Lo4eXAmbxQEfK8xygEsnGROQYCx72VZAPFIC5xLNmyuOiyp0aBeM6UXF?expand[0]=subscription
+2026-05-16 20:14:12 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions/cs_test_a1Lo4eXAmbxQEfK8xygEsnGROQYCx72VZAPFIC5xLNmyuOiyp0aBeM6UXF?expand[0]=subscription response_code=200
+2026-05-16 20:14:12 | INFO     | app.routers.roles.admins | [verify-session] id=cs_test_a1Lo4eXAmbxQEfK8xygEsnGROQYCx72VZAPFIC5xLNmyuOiyp0aBeM6UXF, status=complete, payment_status=paid
+2026-05-16 20:14:12 | INFO     | app.routers.roles.admins | [verify-session] metadata={'planId': '69c9cfeebdf988f605f1ac11', 'tenantId': '69c939c248b8f459967a9da0', 'type': 'tenant_upgrade'}
+2026-05-16 20:14:12 | INFO     | app.routers.roles.admins | [verify-session] ctx_tenant=69c939c248b8f459967a9da0, meta_tenant=69c939c248b8f459967a9da0
+2026-05-16 20:14:13 | INFO     | app.utils.stripe_helpers | [StripeUpgrade] Upgrading tenant 69c939c248b8f459967a9da0 to plan Professional
+2026-05-16 20:14:13 | INFO     | app.routers.roles.admins | [verify-session] result={'success': True, 'message': 'Subscription upgraded successfully!'}
+2026-05-16 20:14:32 | INFO     | stripe | message='Request to Stripe api' method=post url=https://api.stripe.com/v1/checkout/sessions
+2026-05-16 20:14:33 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions response_code=200
+2026-05-16 20:15:01 | INFO     | app.routers.roles.admins | [verify-session] Received request to verify session ID: cs_test_a1fPHi0WAsawxEaJdTkd4zRbLXDiZzzzlwzD5pYYY373tXhlA1HlWw93Ek
+2026-05-16 20:15:01 | INFO     | stripe | message='Request to Stripe api' method=get url=https://api.stripe.com/v1/checkout/sessions/cs_test_a1fPHi0WAsawxEaJdTkd4zRbLXDiZzzzlwzD5pYYY373tXhlA1HlWw93Ek?expand[0]=subscription
+2026-05-16 20:15:01 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions/cs_test_a1fPHi0WAsawxEaJdTkd4zRbLXDiZzzzlwzD5pYYY373tXhlA1HlWw93Ek?expand[0]=subscription response_code=200
+2026-05-16 20:15:01 | INFO     | app.routers.roles.admins | [verify-session] id=cs_test_a1fPHi0WAsawxEaJdTkd4zRbLXDiZzzzlwzD5pYYY373tXhlA1HlWw93Ek, status=complete, payment_status=paid
+2026-05-16 20:15:01 | INFO     | app.routers.roles.admins | [verify-session] metadata={'planId': '69c9cfeebdf988f605f1ac12', 'tenantId': '69c939c248b8f459967a9da0', 'type': 'tenant_upgrade'}
+2026-05-16 20:15:01 | INFO     | app.routers.roles.admins | [verify-session] ctx_tenant=69c939c248b8f459967a9da0, meta_tenant=69c939c248b8f459967a9da0
+2026-05-16 20:15:02 | INFO     | app.utils.stripe_helpers | [StripeUpgrade] Upgrading tenant 69c939c248b8f459967a9da0 to plan Enterprise
+2026-05-16 20:15:02 | INFO     | app.routers.roles.admins | [verify-session] result={'success': True, 'message': 'Subscription upgraded successfully!'}
+2026-05-16 20:15:12 | INFO     | stripe | message='Request to Stripe api' method=delete url=https://api.stripe.com/v1/subscriptions/sub_1TXjvaRvJAcXg89CkpzGEVla
+2026-05-16 20:15:13 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/subscriptions/sub_1TXjvaRvJAcXg89CkpzGEVla response_code=200
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend] student=69e6552c6620f13b6f7cd0c3 raw_enrolledCourses=['69e65fe511b8af634c0f28fd', '69de1ea4d31f53e3ac6c60cb', '69ccf3e560abb2695ecbd827', '69a529c9c8068f0ec8e54830', '69ea26ba1a781a9d197dd2a2']
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend] enrolled_ids count=5
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend] Fetched 5 enrolled course docs
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Introduction to Economics' category='Other' level='Beginner'
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Basics Math' category='General' level='Beginner'
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Networking' category='General' level='Beginner'
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Computer Science Studies' category='Computer Science' level='Beginner'
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Advance course' category='General' level='Advanced'
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend] enrolled_categories={'computer science', 'general', 'other'} enrolled_levels={'Beginner', 'Advanced'}
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend] current_level=Advanced next_level=Advanced related_categories={'electronics', 'big data', 'programming', 'software engineering', 'mobile development', 'cloud computing', 'software development', 'information technology', 'computer', 'system administration', 'ml', 'data engineering', 'artificial intelligence', 'data analysis', 'technology', 'embedded systems', 'networking', 'tech', 'cloud', 'databases', 'operating systems', 'ai', 'web development', 'network', 'computer engineering', 'deep learning', 'devops', 'it', 'security', 'app development', 'computer networks', 'machine learning', 'cybersecurity', 'data science', 'stem'}
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend] candidate courses found=15 (published, not enrolled)
+2026-05-16 20:15:53 | INFO     | app.services.recommendation | [Recommend] Top 6 after scoring: [('Mastering AI Agents with Python', 55.2), ('English Literature', 36.2), ('Urdu Literature', 35.7), ('CyberSecurity', 35.5), ('Social Sciences', 35.5), ('Newton Laws 2', 35.4)]
+2026-05-16 20:15:59 | INFO     | stripe | message='Request to Stripe api' method=post url=https://api.stripe.com/v1/checkout/sessions
+2026-05-16 20:16:00 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions response_code=200
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend] student=69e6552c6620f13b6f7cd0c3 raw_enrolledCourses=['69e65fe511b8af634c0f28fd', '69de1ea4d31f53e3ac6c60cb', '69ccf3e560abb2695ecbd827', '69a529c9c8068f0ec8e54830', '69ea26ba1a781a9d197dd2a2']
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend] enrolled_ids count=5
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend] Fetched 5 enrolled course docs
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Introduction to Economics' category='Other' level='Beginner'
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Basics Math' category='General' level='Beginner'
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Networking' category='General' level='Beginner'
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Computer Science Studies' category='Computer Science' level='Beginner'
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Advance course' category='General' level='Advanced'
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend] enrolled_categories={'computer science', 'general', 'other'} enrolled_levels={'Beginner', 'Advanced'}
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend] current_level=Advanced next_level=Advanced related_categories={'electronics', 'big data', 'programming', 'software engineering', 'mobile development', 'cloud computing', 'software development', 'information technology', 'computer', 'system administration', 'ml', 'data engineering', 'artificial intelligence', 'data analysis', 'technology', 'embedded systems', 'networking', 'tech', 'cloud', 'databases', 'operating systems', 'ai', 'web development', 'network', 'computer engineering', 'deep learning', 'devops', 'it', 'security', 'app development', 'computer networks', 'machine learning', 'cybersecurity', 'data science', 'stem'}
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend] candidate courses found=15 (published, not enrolled)
+2026-05-16 20:16:42 | INFO     | app.services.recommendation | [Recommend] Top 6 after scoring: [('Mastering AI Agents with Python', 55.2), ('English Literature', 36.2), ('Urdu Literature', 35.7), ('CyberSecurity', 35.5), ('Social Sciences', 35.5), ('Newton Laws 2', 35.4)]
+2026-05-16 20:16:48 | INFO     | stripe | message='Request to Stripe api' method=post url=https://api.stripe.com/v1/checkout/sessions
+2026-05-16 20:16:49 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions response_code=200
+2026-05-16 20:17:18 | INFO     | stripe | message='Request to Stripe api' method=get url=https://api.stripe.com/v1/checkout/sessions/cs_test_a11ExEOS7dAQNS7WaYRA2CGGC4QoRroufzYkg4nIO4TyX6jZj8SUQMiIH6
+2026-05-16 20:17:18 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions/cs_test_a11ExEOS7dAQNS7WaYRA2CGGC4QoRroufzYkg4nIO4TyX6jZj8SUQMiIH6 response_code=200
+2026-05-16 20:17:18 | ERROR    | app.main | Unhandled server error on GET /payments/confirm-session/cs_test_a11ExEOS7dAQNS7WaYRA2CGGC4QoRroufzYkg4nIO4TyX6jZj8SUQMiIH6
+Traceback (most recent call last):
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\stripe\_stripe_object.py", line 171, in __getattr__
+    return self[k]
+           ~~~~^^^
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\stripe\_stripe_object.py", line 224, in __getitem__
+    raise err
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\stripe\_stripe_object.py", line 203, in __getitem__
+    return self._data[k]
+           ~~~~~~~~~~^^^
+KeyError: 'get'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\middleware\cors.py", line 96, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\middleware\cors.py", line 154, in simple_response
+    await self.app(scope, receive, send)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\fastapi\routing.py", line 134, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\fastapi\routing.py", line 120, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\fastapi\routing.py", line 674, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\fastapi\routing.py", line 328, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\app\routers\payments.py", line 308, in confirm_checkout_session
+    course_id = metadata.get("courseId")
+                ^^^^^^^^^^^^
+  File "C:\Users\Eman\Desktop\EduVerse\EduVerse-AI-main-backend\.venv\Lib\site-packages\stripe\_stripe_object.py", line 173, in __getattr__
+    raise AttributeError(*err.args) from err
+AttributeError: get
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend] student=69e6552c6620f13b6f7cd0c3 raw_enrolledCourses=['69e65fe511b8af634c0f28fd', '69de1ea4d31f53e3ac6c60cb', '69ccf3e560abb2695ecbd827', '69a529c9c8068f0ec8e54830', '69ea26ba1a781a9d197dd2a2']
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend] enrolled_ids count=5
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend] Fetched 5 enrolled course docs
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Introduction to Economics' category='Other' level='Beginner'
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Basics Math' category='General' level='Beginner'
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Networking' category='General' level='Beginner'
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Computer Science Studies' category='Computer Science' level='Beginner'
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend]   enrolled course 'Advance course' category='General' level='Advanced'
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend] enrolled_categories={'computer science', 'general', 'other'} enrolled_levels={'Beginner', 'Advanced'}
+2026-05-16 20:18:27 | INFO     | app.services.recommendation | [Recommend] current_level=Advanced next_level=Advanced related_categories={'electronics', 'big data', 'programming', 'software engineering', 'mobile development', 'cloud computing', 'software development', 'information technology', 'computer', 'system administration', 'ml', 'data engineering', 'artificial intelligence', 'data analysis', 'technology', 'embedded systems', 'networking', 'tech', 'cloud', 'databases', 'operating systems', 'ai', 'web development', 'network', 'computer engineering', 'deep learning', 'devops', 'it', 'security', 'app development', 'computer networks', 'machine learning', 'cybersecurity', 'data science', 'stem'}
+2026-05-16 20:18:28 | INFO     | app.services.recommendation | [Recommend] candidate courses found=15 (published, not enrolled)
+2026-05-16 20:18:28 | INFO     | app.services.recommendation | [Recommend] Top 6 after scoring: [('Mastering AI Agents with Python', 55.2), ('English Literature', 36.2), ('Urdu Literature', 35.7), ('CyberSecurity', 35.5), ('Social Sciences', 35.5), ('Newton Laws 2', 35.4)]
+2026-05-16 20:19:34 | INFO     | app.main | MongoDB connection closed. Server stopped.
+2026-05-16 20:19:36 | INFO     | app.main | Starting EduVerse AI Backend...
+2026-05-16 20:19:37 | INFO     | app.db.database | MongoDB connection verified (ping OK).
+2026-05-16 20:19:39 | INFO     | app.db.database | All MongoDB indexes verified/created successfully.
+2026-05-16 20:19:39 | INFO     | app.main | active_worker_model already set to 'llama3.2:3b'.
+2026-05-16 20:19:39 | INFO     | app.main | Startup complete — server is ready.
+2026-05-16 20:20:34 | INFO     | app.main | MongoDB connection closed. Server stopped.
+2026-05-16 20:20:37 | INFO     | app.main | Starting EduVerse AI Backend...
+2026-05-16 20:20:38 | INFO     | app.db.database | MongoDB connection verified (ping OK).
+2026-05-16 20:20:40 | INFO     | app.db.database | All MongoDB indexes verified/created successfully.
+2026-05-16 20:20:40 | INFO     | app.main | active_worker_model already set to 'llama3.2:3b'.
+2026-05-16 20:20:40 | INFO     | app.main | Startup complete — server is ready.
+2026-05-16 20:21:04 | INFO     | stripe | message='Request to Stripe api' method=post url=https://api.stripe.com/v1/checkout/sessions
+2026-05-16 20:21:05 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions response_code=200
+2026-05-16 20:21:31 | INFO     | stripe | message='Request to Stripe api' method=get url=https://api.stripe.com/v1/checkout/sessions/cs_test_a1zjNc5VyZxRe9owEqNe7nGqM5YIqc2tQmaPR53feIK34HewO6qMWNfj3L
+2026-05-16 20:21:32 | INFO     | stripe | message='Stripe API response' path=https://api.stripe.com/v1/checkout/sessions/cs_test_a1zjNc5VyZxRe9owEqNe7nGqM5YIqc2tQmaPR53feIK34HewO6qMWNfj3L response_code=200
+2026-05-16 20:21:32 | INFO     | app.routers.payments | [Stripe] Payment cs_test_a1zjNc5VyZxRe9owEqNe7nGqM5YIqc2tQmaPR53feIK34HewO6qMWNfj3L marked as completed.
+2026-05-16 20:21:32 | INFO     | app.routers.payments | [Stripe] Enrolling student 69e6552c6620f13b6f7cd0c3 in course 6974a6a0b54fe4bc2eeb2bb4
+2026-05-16 20:21:37 | INFO     | app.services.lesson_generator | Step 1: Classifying student=69e6552c6620f13b6f7cd0c3 score=100.0%
+2026-05-16 20:21:37 | INFO     | app.services.lesson_generator | Step 1 complete: pace=fast
+2026-05-16 20:21:37 | INFO     | app.services.lesson_generator | Step 2: Calling Ollama (local LLM) for pace='fast' topic='Reading Material'
+2026-05-16 20:21:37 | INFO     | app.services.ollama_service | Generating adaptive lesson: model=llama3.2:3b pace=fast topic=Reading Material score=100.0
+2026-05-16 20:22:08 | WARNING  | app.main | HTTP 403 on GET /tenants/69c939c248b8f459967a9da0 — Forbidden: Insufficient Role
+2026-05-16 20:25:49 | INFO     | httpx | HTTP Request: POST http://localhost:11434/api/generate "HTTP/1.1 200 OK"
+2026-05-16 20:25:49 | INFO     | app.services.lesson_generator | Step 2 complete: lesson title='Introduction'
+2026-05-16 20:25:49 | INFO     | app.services.lesson_generator | Step 3 complete: classification saved id=6a088c7d585ca92125a9381d
+2026-05-16 20:25:49 | INFO     | app.services.lesson_generator | Step 4 complete: lesson saved id=6a088c7d585ca92125a9381e
+2026-05-16 20:25:59 | WARNING  | app.main | HTTP 403 on GET /tenants/69c939c248b8f459967a9da0 — Forbidden: Insufficient Role
+2026-05-16 20:27:18 | INFO     | app.main | MongoDB connection closed. Server stopped.

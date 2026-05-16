@@ -185,34 +185,33 @@ async def _process_successful_payment(
 ):
     """
     Helper to mark a payment as completed and enroll the student.
-    Uses metadata to ensure we find the correct record even if IDs mismatch.
+    Used by BOTH the Webhook and the manual Confirm endpoint.
     """
-    from app.crud.payments import find_pending_payment, update_payment_status
+    from app.crud.payments import find_pending_payment, update_payment_status, find_payment_by_session
 
-    # 1. Idempotency check: find the pending record
-    # We look it up by student/course to be safe, then update by its session ID
-    pending = await find_pending_payment(student_id, course_id)
-    if not pending:
-        # If no pending record found, it might already be completed or created externally.
-        # We'll still try to enroll to be safe.
-        logger.warning(
-            "[Webhook] No pending payment found for student=%s course=%s",
-            student_id, course_id
-        )
+    # 1. Idempotency check: find the payment record
+    existing = await find_payment_by_session(stripe_session_id)
     
-    # 2. Update status (if we have a session ID)
-    target_id = stripe_session_id or (pending["stripeSessionId"] if pending else None)
-    if target_id:
-        await update_payment_status(target_id, "completed", studentId=student_id, tenantId=tenant_id)
+    if existing and existing.get("status") == "completed":
+        logger.info("[Stripe] Payment %s already processed. Skipping.", stripe_session_id)
+    else:
+        # Update status to completed
+        await update_payment_status(
+            stripe_session_id, 
+            "completed", 
+            studentId=student_id, 
+            tenantId=tenant_id
+        )
+        logger.info("[Stripe] Payment %s marked as completed.", stripe_session_id)
 
-    # 3. Resolve profile for enrollment (handles tenant context)
+    # 2. Resolve profile for enrollment (handles tenant context)
     resolved = await _resolve_student_profile(student_id, tenant_id)
     if not resolved:
-        logger.error("[Webhook] Could not resolve student profile for enrollment: student=%s", student_id)
-        return
+        logger.error("[Stripe] Could not resolve student profile for enrollment: student=%s", student_id)
+        return {"success": False, "message": "Student profile not found"}
 
-    # 4. Perform enrollment
-    logger.info("[Webhook] Enrolling student %s in course %s", student_id, course_id)
+    # 3. Perform enrollment (idempotent in course_crud)
+    logger.info("[Stripe] Enrolling student %s in course %s", student_id, course_id)
     enrollment = await course_crud.enroll_student(
         course_id,
         resolved["student_id"],
@@ -221,9 +220,10 @@ async def _process_successful_payment(
     )
     
     if not enrollment.get("success") and enrollment.get("message") != "Already enrolled":
-        logger.error("[Webhook] Enrollment failed: %s", enrollment.get("message"))
-        if target_id:
-            await update_payment_status(target_id, "completed", enrollmentError=enrollment.get("message"))
+        logger.error("[Stripe] Enrollment failed: %s", enrollment.get("message"))
+        return {"success": False, "message": enrollment.get("message")}
+
+    return {"success": True, "message": "Enrolled successfully"}
 
 
 @router.post("/webhook")
@@ -250,52 +250,31 @@ async def stripe_webhook(request: Request):
 
     # ── Handling Course Purchases & Tenant Upgrades ──
     if event_type == "checkout.session.completed" or event_type == "payment_intent.succeeded":
-        session_type = getattr(metadata, "type", None)
+        session_type = metadata.get("type")
         
         if session_type == "course_purchase":
-            course_id = getattr(metadata, "courseId", None)
-            student_id = getattr(metadata, "studentId", None)
-            tenant_id = getattr(metadata, "tenantId", None)
+            course_id = metadata.get("courseId")
+            student_id = metadata.get("studentId")
+            tenant_id = metadata.get("tenantId")
             stripe_id = getattr(obj, "id", None)
 
             if course_id and student_id:
-                await _process_successful_payment(course_id, student_id, tenant_id, stripe_id)
+                await _process_successful_payment(str(course_id), str(student_id), tenant_id, str(stripe_id or ""))
 
         elif session_type == "tenant_upgrade" and event_type == "checkout.session.completed":
-            tenant_id = getattr(metadata, "tenantId", None)
-            plan_id = getattr(metadata, "planId", None)
+            tenant_id = metadata.get("tenantId")
+            plan_id = metadata.get("planId")
             if tenant_id and plan_id:
-                from datetime import timedelta
-                now = datetime.utcnow()
-                plan_doc = await db.subscriptionPlans.find_one({"_id": ObjectId(plan_id)})
-                if plan_doc:
-                    billing_cycle = plan_doc.get("billingCycle", "monthly")
-                    expiry = now + timedelta(days=365) if billing_cycle == "yearly" else now + timedelta(days=30)
-                    
-                    await db.tenants.update_one(
-                        {"_id": ObjectId(tenant_id)},
-                        {"$set": {
-                            "subscriptionId": ObjectId(plan_id),
-                            "subscriptionPlan": plan_doc.get("name"),
-                            "subscriptionCategory": plan_doc.get("category", "paid"),
-                            "stripeSubscriptionId": getattr(obj, "subscription", None),
-                            "subscriptionStartDate": now,
-                            "subscriptionExpiryDate": expiry,
-                            "updatedAt": now
-                        }}
-                    )
-                    
-                    # Record the payment for the admin history
-                    from app.crud.payments import create_payment
-                    await create_payment({
-                        "tenantId": tenant_id,
-                        "paymentType": "subscription",
-                        "amount": getattr(obj, "amount_total", 0) / 100,
-                        "currency": getattr(obj, "currency", "usd"),
-                        "status": "completed",
-                        "stripeSessionId": getattr(obj, "id", None),
-                        "metadata": dict(metadata) if metadata else {}
-                    })
+                from app.utils.stripe_helpers import process_tenant_upgrade
+                await process_tenant_upgrade(
+                    tenant_id=tenant_id,
+                    plan_id=plan_id,
+                    stripe_sub_id=getattr(obj, "subscription", None),
+                    session_id=str(getattr(obj, "id", None) or ""),
+                    amount_total=getattr(obj, "amount_total", 0),
+                    currency=getattr(obj, "currency", "usd"),
+                    metadata=dict(metadata) if metadata else {}
+                )
 
     elif event_type == "payment_intent.payment_failed":
         await update_payment_status(obj["id"], "failed")
@@ -312,71 +291,42 @@ async def confirm_checkout_session(
     current_user=Depends(require_role("student")),
 ):
     """
-    Called by frontend after Stripe Embedded Checkout redirects back with
-    ?checkout_success=1&session_id=cs_...
-    Verifies the checkout session with Stripe, marks payment as completed,
-    and enrolls the student in the course. Safe and idempotent.
+    Called by frontend after Stripe Embedded Checkout redirects back.
+    Verifies session directly with Stripe and triggers enrollment.
+    This replaces the need for a Webhook in development/local environments.
     """
-    # 1. Retrieve the checkout session from Stripe
     try:
-        session = await asyncio.to_thread(
-            stripe.checkout.Session.retrieve, session_id
-        )
+        session = await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id)
     except stripe.error.StripeError as e:
-        logger.error("[ConfirmSession] Stripe error retrieving session %s: %s", session_id, e)
+        logger.error("[ConfirmSession] Stripe error: %s", e)
         raise HTTPException(status_code=400, detail="Invalid checkout session")
 
-    # 2. Verify payment is paid
     if getattr(session, "payment_status", None) != "paid":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Payment not completed yet (status: {session.get('payment_status')})"
-        )
+        raise HTTPException(status_code=400, detail="Payment not completed")
 
-    # 3. Extract metadata stored when session was created
-    metadata = getattr(session, "metadata", {})
-    course_id = getattr(metadata, "courseId", None)
-    student_id = getattr(metadata, "studentId", None)
-    tenant_id = getattr(metadata, "tenantId", None)
+    raw_meta = getattr(session, "metadata", {})
+    metadata = raw_meta._data if hasattr(raw_meta, "_data") else (dict(raw_meta) if isinstance(raw_meta, dict) else {})
+    course_id = metadata.get("courseId")
+    student_id = metadata.get("studentId")
+    tenant_id = metadata.get("tenantId")
 
     if not course_id or not student_id:
-        raise HTTPException(status_code=400, detail="Session metadata is incomplete")
+        raise HTTPException(status_code=400, detail="Session metadata missing")
 
-    # 4. Verify the logged-in student owns this payment
+    # Verify ownership
     student_profile = await _get_current_student_profile(current_user)
-    resolved_student = await _resolve_student_profile(student_id, tenant_id)
-    if not resolved_student:
-        raise HTTPException(status_code=403, detail="Could not resolve student profile")
+    if student_id != student_profile["student_id"]:
+         # Check if student_id in metadata is the userId instead
+         resolved = await _resolve_student_profile(student_id, tenant_id)
+         if not resolved or resolved["student_id"] != student_profile["student_id"]:
+             raise HTTPException(status_code=403, detail="Payment ownership mismatch")
 
-    if resolved_student["student_id"] != student_profile["student_id"]:
-        raise HTTPException(status_code=403, detail="This payment does not belong to you")
+    # Process success (enrollment + DB update)
+    result = await _process_successful_payment(course_id, student_id, tenant_id, session_id)
+    
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["message"])
 
-    # 5. Mark payment as completed (idempotent — skip if already done)
-    existing = await find_payment_by_session(session_id)
-    if existing and existing.get("status") != "completed":
-        await update_payment_status(
-            session_id,
-            "completed",
-            studentId=resolved_student["student_id"],
-            tenantId=resolved_student["tenant_id"],
-        )
-    elif not existing:
-        # Edge case: no payment record found (e.g., webhook already cleaned up)
-        logger.warning("[ConfirmSession] No payment record found for session %s, proceeding with enrollment only", session_id)
-
-    # 6. Enroll the student (idempotent)
-    logger.info("[ConfirmSession] Enrolling student %s in course %s", resolved_student["student_id"], course_id)
-    enrollment = await course_crud.enroll_student(
-        course_id,
-        resolved_student["student_id"],
-        resolved_student["tenant_id"],
-        enforce_same_tenant=False,
-    )
-    if not enrollment.get("success") and enrollment.get("message") != "Already enrolled":
-        logger.error("[ConfirmSession] Enrollment failed: %s", enrollment.get("message"))
-        raise HTTPException(status_code=400, detail=enrollment.get("message", "Enrollment failed"))
-
-    logger.info("[ConfirmSession] Success — student %s enrolled in course %s", resolved_student["student_id"], course_id)
     return {"status": "success", "courseId": course_id, "enrolled": True}
 
 
@@ -400,12 +350,15 @@ async def confirm_payment(
     if intent.status != "succeeded":
         raise HTTPException(status_code=400, detail="Payment not completed")
 
-    metadata = getattr(intent, "metadata", {})
-    course_id = getattr(metadata, "courseId", None)
-    student_id = getattr(metadata, "studentId", None)
-    tenant_id = getattr(metadata, "tenantId", None)
+    raw_meta = getattr(intent, "metadata", {})
+    metadata = raw_meta._data if hasattr(raw_meta, "_data") else (dict(raw_meta) if isinstance(raw_meta, dict) else {})
+    course_id = metadata.get("courseId")
+    student_id = metadata.get("studentId")
+    tenant_id = metadata.get("tenantId")
     student_profile = await _get_current_student_profile(current_user)
-    resolved_student = await _resolve_student_profile(student_id, tenant_id)
+    if not student_id:
+        raise HTTPException(status_code=400, detail="Payment metadata missing student info")
+    resolved_student = await _resolve_student_profile(str(student_id), tenant_id)
     if not resolved_student:
         raise HTTPException(status_code=403, detail="Invalid payment ownership metadata")
 
@@ -423,8 +376,10 @@ async def confirm_payment(
             tenantId=resolved_student["tenant_id"],
         )
 
+    if not course_id:
+        raise HTTPException(status_code=400, detail="Payment metadata missing course info")
     enrollment = await course_crud.enroll_student(
-        course_id,
+        str(course_id),
         resolved_student["student_id"],
         resolved_student["tenant_id"],
         enforce_same_tenant=False,
