@@ -31,6 +31,9 @@ def get_cors_origins() -> list[str]:
         "http://127.0.0.1:8000",
         "http://localhost:8001",
         "http://127.0.0.1:8001",
+        "https://https://eduverse-ai-app.vercel.app/",
+        "https://https://eduverse-okmrmw2fq-ayesha-javaids-projects.vercel.app/",
+        "https://eduverse-ai-git-main-ayesha-javaids-projects.vercel.app",
     ]
 
     candidates: list[str] = []
@@ -40,11 +43,15 @@ def get_cors_origins() -> list[str]:
             try:
                 parsed = json.loads(raw)
                 if isinstance(parsed, list):
-                    candidates.extend([str(item).strip() for item in parsed if str(item).strip()])
+                    candidates.extend(
+                        [str(item).strip() for item in parsed if str(item).strip()]
+                    )
             except json.JSONDecodeError:
                 pass
         if not candidates:
-            candidates.extend([item.strip() for item in configured.split(",") if item.strip()])
+            candidates.extend(
+                [item.strip() for item in configured.split(",") if item.strip()]
+            )
     if frontend_url:
         candidates.append(frontend_url)
 
